@@ -463,7 +463,7 @@ function tacheDeplacee(t, date, heure){
   if(h) return { ...reste, planFixe: true, planDate: date, planHeure: h, echeance: date, echeanceFin: date };
   return { ...reste, echeance: date, echeanceFin: date };
 }
-const TYPES_GESTE_TELEPHONE = ['creer', 'faite', 'deplacer', 'liberer'];
+const TYPES_GESTE_TELEPHONE = ['creer', 'faite', 'deplacer', 'liberer', 'modifier'];
 function tacheDepuisTelephone(t){
   const iso = (d) => /^\d{4}-\d{2}-\d{2}$/.test(d || '') ? d : '';
   const texte = String((t && t.texte) || '').trim().slice(0, 300);
@@ -493,6 +493,17 @@ function appliquerGesteTache(agenda, tasks, obj, op, sansDossier){
     const heure = hhmmValide(op.heure) ? op.heure : '';
     return { tasks: liste.map(x => x.id === t.id ? tacheDeplacee(x, date, heure) : x),
       message: '« ' + t.texte + ' » placée le ' + fmtDate(date) + (heure ? ' à ' + heureLisible(heure) : '') };
+  }
+  if(op.type === 'modifier'){
+    const ch = op.champs || {}, patch = {};
+    if(typeof ch.texte === 'string' && ch.texte.trim()) patch.texte = ch.texte.trim().slice(0, 300);
+    if(typeof ch.description === 'string') patch.description = ch.description.slice(0, 4000);
+    if(typeof ch.categorie === 'string') patch.categorie = ch.categorie ? categorieTache(ch.categorie) : '';
+    const duree = Math.round(Number(ch.dureeMin));
+    if(duree >= 5 && duree <= 600) patch.dureeMin = duree;
+    if(typeof ch.important === 'boolean') patch.important = ch.important;
+    if(!Object.keys(patch).length) return null;
+    return { tasks: liste.map(x => x.id === t.id ? { ...x, ...patch } : x), message: '« ' + (patch.texte || t.texte) + ' » modifiée' };
   }
   if(op.type === 'liberer'){
     if(!t.planFixe) return null;
