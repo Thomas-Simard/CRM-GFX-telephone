@@ -463,6 +463,63 @@ function tacheDeplacee(t, date, heure){
   if(h) return { ...reste, planFixe: true, planDate: date, planHeure: h, echeance: date, echeanceFin: date };
   return { ...reste, echeance: date, echeanceFin: date };
 }
+const TYPES_GESTE_TELEPHONE = ['creer', 'faite', 'deplacer', 'liberer'];
+function tacheDepuisTelephone(t){
+  const iso = (d) => /^\d{4}-\d{2}-\d{2}$/.test(d || '') ? d : '';
+  const texte = String((t && t.texte) || '').trim().slice(0, 300);
+  if(!t || !/^[A-Za-z0-9_-]{1,60}$/.test(String(t.id || '')) || !texte) return null;
+  const echeance = iso(t.echeance) || todayIso();
+  const duree = Math.round(Number(t.dureeMin));
+  const out = { id: String(t.id), texte, description: String(t.description || '').slice(0, 4000), categorie: t.categorie ? categorieTache(String(t.categorie)) : '',
+    echeance, echeanceFin: iso(t.echeanceFin) || echeance, fait: false, dureeMin: duree >= 5 && duree <= 600 ? duree : 30, creeSurTelephone: true };
+  if(hhmmValide(t.heure)) out.heure = t.heure;
+  if(t.important) out.important = true;
+  return out;
+}
+function appliquerGesteTache(agenda, tasks, obj, op, sansDossier){
+  const liste = Array.isArray(tasks) ? tasks.slice() : [];
+  if(!op || TYPES_GESTE_TELEPHONE.indexOf(op.type) === -1) throw new Error('Geste inconnu');
+  if(op.type === 'creer'){
+    const t = tacheDepuisTelephone(op.tache);
+    if(!t) throw new Error('Tâche du téléphone illisible');
+    if(liste.some(x => x.id === t.id)) return null;
+    return { tasks: liste.concat([t]), message: '« ' + t.texte + ' » ajoutée' };
+  }
+  const t = liste.find(x => x.id === op.taskId);
+  if(!t) throw new Error('Cette tâche n’existe plus : elle a été modifiée sur un autre appareil.');
+  if(op.type === 'deplacer'){
+    const date = /^\d{4}-\d{2}-\d{2}$/.test(op.date || '') ? op.date : '';
+    if(!date) throw new Error('Date invalide');
+    const heure = hhmmValide(op.heure) ? op.heure : '';
+    return { tasks: liste.map(x => x.id === t.id ? tacheDeplacee(x, date, heure) : x),
+      message: '« ' + t.texte + ' » placée le ' + fmtDate(date) + (heure ? ' à ' + heureLisible(heure) : '') };
+  }
+  if(op.type === 'liberer'){
+    if(!t.planFixe) return null;
+    return { tasks: liste.map(x => { if(x.id !== t.id) return x; const { planFixe, planDate, planHeure, ...reste } = x; return reste; }),
+      message: '« ' + t.texte + ' » rendue au placement automatique' };
+  }
+  // 'faite' : l'état voulu, à l'heure où le geste a été fait sur le téléphone.
+  const voulu = op.fait !== false;
+  if(!!t.fait === voulu) return null;
+  const auj = /^\d{4}-\d{2}-\d{2}$/.test(op.faitLe || '') ? op.faitLe : todayIso();
+  const heure = hhmmValide(op.faitA) ? op.faitA : heureCouranteHHMM();
+  const idSuite = 't' + String(op.id || Date.now()).replace(/[^A-Za-z0-9]/g, '');
+  if(voulu && sequenceAContinuer(liste, t)){
+    if(['continuer', 'repondu', 'terminer'].indexOf(op.suite) === -1) throw Object.assign(new Error('Choisis la suite de la séquence.'), { suiteRequise: true });
+    let nt = liste.map(x => x.id === t.id ? { ...x, fait: true, faitLe: auj, faitA: heure } : x);
+    let patch = null, message = 'Séquence « ' + t.seqNom + ' » terminée';
+    if(op.suite === 'continuer'){
+      const suivante = etapeSuivanteSequence(agenda, t, auj);
+      if(suivante){ nt = nt.concat([{ ...suivante, id: idSuite }]); message = 'Étape ' + (suivante.seqStep + 1) + '/' + suivante.seqEtapes.length + ' créée — échéance ' + fmtDate(suivante.echeance); }
+    }
+    if(op.suite === 'repondu'){ message = 'Réponse notée — séquence « ' + t.seqNom + ' » arrêtée'; if(!sansDossier && obj && !obj.aRepondu) patch = { aRepondu: true, aReponduLe: auj }; }
+    return { tasks: nt, patch, message };
+  }
+  const occ = voulu ? occurrenceSuivante(t, auj) : null;
+  return { tasks: liste.map(x => x.id === t.id ? tacheBasculee(x, auj, heure) : x).concat(occ ? [{ ...occ, id: idSuite + 'r' }] : []),
+    message: voulu ? '« ' + t.texte + ' » faite' + (occ ? ' · prochaine le ' + fmtDate(occ.echeance) : '') : '« ' + t.texte + ' » remise à faire' };
+}
 function tacheAPartAgenda(t){
   return !!t && categorieTache(t.categorie || '') === 'Conformité' && !hhmmValide(t.heure) && !(t.planFixe && hhmmValide(t.planHeure));
 }
@@ -1603,7 +1660,7 @@ var CRM_METHODES = {
     return val;
   }
 };
-var CRM_COMMUN_NOMS = ["STAGES_DEFAUT","TYPES_ETAPE","TASK_CATEGORIES_DEFAUT","CATEGORIES_RENOMMEES","CATEGORIES_BASE_AJOUTEES","categorieTache","tacheCategorieAJour","STAGES_CONFIG","STAGES","TYPES_PAR_ETAPE","TASK_CATEGORIES","PIPELINE_AGING_DEFAUT","PIPELINE_AGING","OBJECTIF_HEBDO_DEFAUT","OBJECTIF_HEBDO","TASK_RECURRENCE","recurrenceOption","MODELES_TACHES_DEFAUT","MODELES_TACHES","scorePriorite","typeEtape","estGagnee","estFinale","SEQUENCES_DEFAUT","SEQUENCES_BASE_AJOUTEES","SEQUENCES_SUIVI","normaliserSequences","dateEtapeSequence","tacheEtapeSequence","tacheBasculee","occurrenceSuivante","sequenceAContinuer","etapeSuivanteSequence","tacheDeplacee","tacheAPartAgenda","tachesConformite","echeanceConformite","FUNNEL_STAGES","STAGES_GAGNEES","estNoShowEtape","estEtapeRdv","estTacheContact","notesIssues","leadDateReponse","pourcentage","heureCouranteHHMM","canalTache","CRENEAUX_CONTACT","JOURS_SEMAINE","jourSemaineIso","leadContacts","JOURNAL_IA_DOSSIER","AGENDA_TYPES_DEFAUT","AGENDA_SEMAINE_DEFAUT","AGENDA_DUREES_DEFAUT","AGENDA_DUREE_DEFAUT","AGENDA_MARGE_DEFAUT","AGENDA_GRILLE_DEFAUT","JOURS_COURTS","hhmmValide","minDe","hhmmDe","heureLisible","normaliserAgenda","lundiIso","semaineDuJour","typeAgenda","plagesDuJour","typeAccepte","dureeTacheAgenda","blocagesDuJour","soustraireSegment","BORNES_MOMENT","prefsAgendaClient","debutSelonPreferences","plagesAcceptant","repartirTachesSouples","planifierJournee","GRACE_TACHE_MANQUEE_MIN","majPrevuJournee","prochainJourAvecPlage","jourAvecPlageDes","ICONES_CATEGORIE","iconeCategorie","PRODUIT_TYPES","STATUTS_POTENTIEL","estPotentiel","TAUX_COMMISSION_DEFAUT","TAUX_COMMISSION","tauxCommission","policeIntacte","produitDepuisReco","chiffresReco","synchroniserPolicesAbf","MOIS_COURTS","DOSSIER_FICHES_ENTRANTES","DOSSIERS_TECHNIQUES","TACHES_SANS_DOSSIER_ID","TACHES_SANS_DOSSIER_NOM","SUBFOLDER_LABELS","FIXED_SUBFOLDERS","SEGMENTATION_DEFAUT","SEGMENTATION_OPTIONS","appliquerReglages","MOMENTS_CONTACT","momentsContact","abfFraicheur","_todayCache","todayIso","todayEpoch","_minuitIso","lastNoteIso","daysBetween","addDays","findAbfJsonHandle","ID_RACINE","CATEGORIE_ABF_RACINE","PROVENANCE_PAR_DEFAUT","estDossierClientDisque","RE_DOSSIER_MENAGE","estDossierMenageDisque","entreeIndexChemin","parseNotesRaw","splitNomDossier","fmtDate","newGnId"];
+var CRM_COMMUN_NOMS = ["STAGES_DEFAUT","TYPES_ETAPE","TASK_CATEGORIES_DEFAUT","CATEGORIES_RENOMMEES","CATEGORIES_BASE_AJOUTEES","categorieTache","tacheCategorieAJour","STAGES_CONFIG","STAGES","TYPES_PAR_ETAPE","TASK_CATEGORIES","PIPELINE_AGING_DEFAUT","PIPELINE_AGING","OBJECTIF_HEBDO_DEFAUT","OBJECTIF_HEBDO","TASK_RECURRENCE","recurrenceOption","MODELES_TACHES_DEFAUT","MODELES_TACHES","scorePriorite","typeEtape","estGagnee","estFinale","SEQUENCES_DEFAUT","SEQUENCES_BASE_AJOUTEES","SEQUENCES_SUIVI","normaliserSequences","dateEtapeSequence","tacheEtapeSequence","tacheBasculee","occurrenceSuivante","sequenceAContinuer","etapeSuivanteSequence","tacheDeplacee","TYPES_GESTE_TELEPHONE","tacheDepuisTelephone","appliquerGesteTache","tacheAPartAgenda","tachesConformite","echeanceConformite","FUNNEL_STAGES","STAGES_GAGNEES","estNoShowEtape","estEtapeRdv","estTacheContact","notesIssues","leadDateReponse","pourcentage","heureCouranteHHMM","canalTache","CRENEAUX_CONTACT","JOURS_SEMAINE","jourSemaineIso","leadContacts","JOURNAL_IA_DOSSIER","AGENDA_TYPES_DEFAUT","AGENDA_SEMAINE_DEFAUT","AGENDA_DUREES_DEFAUT","AGENDA_DUREE_DEFAUT","AGENDA_MARGE_DEFAUT","AGENDA_GRILLE_DEFAUT","JOURS_COURTS","hhmmValide","minDe","hhmmDe","heureLisible","normaliserAgenda","lundiIso","semaineDuJour","typeAgenda","plagesDuJour","typeAccepte","dureeTacheAgenda","blocagesDuJour","soustraireSegment","BORNES_MOMENT","prefsAgendaClient","debutSelonPreferences","plagesAcceptant","repartirTachesSouples","planifierJournee","GRACE_TACHE_MANQUEE_MIN","majPrevuJournee","prochainJourAvecPlage","jourAvecPlageDes","ICONES_CATEGORIE","iconeCategorie","PRODUIT_TYPES","STATUTS_POTENTIEL","estPotentiel","TAUX_COMMISSION_DEFAUT","TAUX_COMMISSION","tauxCommission","policeIntacte","produitDepuisReco","chiffresReco","synchroniserPolicesAbf","MOIS_COURTS","DOSSIER_FICHES_ENTRANTES","DOSSIERS_TECHNIQUES","TACHES_SANS_DOSSIER_ID","TACHES_SANS_DOSSIER_NOM","SUBFOLDER_LABELS","FIXED_SUBFOLDERS","SEGMENTATION_DEFAUT","SEGMENTATION_OPTIONS","appliquerReglages","MOMENTS_CONTACT","momentsContact","abfFraicheur","_todayCache","todayIso","todayEpoch","_minuitIso","lastNoteIso","daysBetween","addDays","findAbfJsonHandle","ID_RACINE","CATEGORIE_ABF_RACINE","PROVENANCE_PAR_DEFAUT","estDossierClientDisque","RE_DOSSIER_MENAGE","estDossierMenageDisque","entreeIndexChemin","parseNotesRaw","splitNomDossier","fmtDate","newGnId"];
 </script>
   <script>// Calendrier façon Google Agenda : la logique COMMUNE au CRM pour ordinateur et à la version
 // téléphone (mobile/). Ici, rien ne dessine : les deux écrans reçoivent les mêmes vues, les
@@ -2544,7 +2601,8 @@ var CRM_COMMUN_NOMS = ["STAGES_DEFAUT","TYPES_ETAPE","TASK_CATEGORIES_DEFAUT","C
   }
   async function connecterDossier(){
     if(!dossierPossible()) throw new Error('Ce navigateur ne sait pas ouvrir un dossier : importe le fichier.');
-    const h = await racine.showDirectoryPicker({ id: 'gfx-envoi', mode: 'read' });
+    // En écriture : les gestes faits ici (créer, cocher, déplacer) y partent vers l'ordinateur.
+    const h = await racine.showDirectoryPicker({ id: 'gfx-envoi', mode: 'readwrite' });
     if(enTest()){ racine.GFXM_DOSSIER_TEST = h; return h; }
     await transaction('readwrite', (st) => { st.put(h, CLE_DOSSIER); });
     return h;
@@ -2574,6 +2632,27 @@ var CRM_COMMUN_NOMS = ["STAGES_DEFAUT","TYPES_ETAPE","TASK_CATEGORIES_DEFAUT","C
     if(actuel !== m.texte){ verifier(m.texte); await transaction('readwrite', (st) => { st.put(m.texte, CLE); }); }
     return { etat: 'importe', texte: m.texte, nom: h.name, fichier: m.nom, nouveau: actuel !== m.texte };
   }
+  // Écrit un fichier dans le dossier connecté. demander : après un toucher seulement.
+  async function ecrireDansDossier(nom, texte, demander){
+    const h = await dossierConnecte();
+    if(!h || !h.getFileHandle) return false;
+    let perm = h.queryPermission ? await h.queryPermission({ mode: 'readwrite' }) : 'granted';
+    if(perm !== 'granted' && demander && h.requestPermission) perm = await h.requestPermission({ mode: 'readwrite' });
+    if(perm !== 'granted') return false;
+    const f = await h.getFileHandle(nom, { create: true });
+    const w = await f.createWritable();
+    await w.write(texte);
+    await w.close();
+    return true;
+  }
+  // File des gestes pas encore confirmés par l'ordinateur : TOUJOURS chiffrée (même code).
+  async function garderGestes(texte){
+    try{ await transaction('readwrite', (st) => { if(texte) st.put(texte, 'gestes'); else st.delete('gestes'); }); }catch(e){}
+  }
+  async function gestesGardes(){
+    try{ return await transaction('readonly', (st, rendre) => { const q = st.get('gestes'); q.onsuccess = () => rendre(q.result || ''); }) || ''; }
+    catch(e){ return ''; }
+  }
   async function copieLocale(){
     try{ return await transaction('readonly', (st, rendre) => { const q = st.get(CLE); q.onsuccess = () => rendre(q.result || ''); }) || ''; }
     catch(e){ return ''; }
@@ -2588,7 +2667,8 @@ var CRM_COMMUN_NOMS = ["STAGES_DEFAUT","TYPES_ETAPE","TASK_CATEGORIES_DEFAUT","C
   function dateEnvoi(texte){ try{ return JSON.parse(texte).genereLe || ''; }catch(e){ return ''; } }
 
   racine.PublicationMobile = { actif, importer, lire, oublier, dateEnvoi, copieLocale,
-    dossierPossible, dossierConnecte, connecterDossier, oublierDossier, actualiserDepuisDossier };
+    dossierPossible, dossierConnecte, connecterDossier, oublierDossier, actualiserDepuisDossier,
+    ecrireDansDossier, garderGestes, gestesGardes, FICHIER_GESTES: 'CRM GFX - gestes telephone.json' };
 })(window);
 </script>
   <script>// CRM GFX · version téléphone. Écrans : Agenda (façon Google Agenda), Tâches, Clients (fiche),
@@ -2625,7 +2705,7 @@ var CRM_COMMUN_NOMS = ["STAGES_DEFAUT","TYPES_ETAPE","TASK_CATEGORIES_DEFAUT","C
   const memoriserCode = (c) => { try{ if(c) localStorage.setItem(CLE_CODE, c); else localStorage.removeItem(CLE_CODE); }catch(e){} };
   window.CrmMobile = { app, moteur: m, rendre: () => rendre(), ouvrirDemo: () => ouvrirDemo(),   // pour les tests
     chargerOneDrive: (silencieux) => chargerOneDrive(silencieux), verrouiller: (raison) => verrouiller(raison), lecteur: () => lecteur,
-    geste: (nom, ...args) => geste(nom, ...args), ouvrirPublication: (code, silencieux) => ouvrirPublication(code, silencieux),
+    geste: (nom, ...args) => geste(nom, ...args), gestesEnAttente: () => gestes.slice(), envoyerGestes: (manuel) => envoyerGestes(manuel), ouvrirPublication: (code, silencieux) => ouvrirPublication(code, silencieux),
     importerEnvoi: (source) => importerEnvoi(source), lireCopieEnvoi: () => lireCopieEnvoi(), oublierCode: () => { memoriserCode(''); },
     ouvrirSansCode: () => ouvrirSansCode(),
     connecterDossierEnvoi: () => connecterDossierEnvoi(), actualiserEnvoi: (demander) => actualiserEnvoi(demander) };
@@ -2646,7 +2726,7 @@ var CRM_COMMUN_NOMS = ["STAGES_DEFAUT","TYPES_ETAPE","TASK_CATEGORIES_DEFAUT","C
   const garder = (x) => M.correspond(x, app.filtre);
   const filtreActif = () => !!(app.filtre.categorie || app.filtre.sequence);
   const maintenantMin = () => { const d = new Date(); return d.getHours() * 60 + d.getMinutes(); };
-  const peutEcrire = () => app.charge && (app.source === 'demo' || (app.source === 'onedrive' && OD.estConnecte()));
+  const peutEcrire = () => app.charge && (app.source === 'demo' || (app.source === 'onedrive' && OD.estConnecte()) || (app.source === 'publication' && !!codeOuvert));
   function annoncer(texte){
     app.message = texte; rendreMessage();
     clearTimeout(minuterieMessage); minuterieMessage = setTimeout(() => { app.message = ''; rendreMessage(); }, 3500);
@@ -2738,7 +2818,8 @@ var CRM_COMMUN_NOMS = ["STAGES_DEFAUT","TYPES_ETAPE","TASK_CATEGORIES_DEFAUT","C
       const r = await PUB.lire();
       const donnees = await COFFRE.dechiffrer(r.texte, leCode);
       M.chargerInstantane(m, donnees);
-      codeOuvert = leCode; memoriserCode(leCode); app.charge = true; app.erreur = ''; app.copieEnvoi = PUB.dateEnvoi(r.texte) || '?';
+      codeOuvert = leCode; memoriserCode(leCode);
+      await reprendreGestes(donnees.gestesAppliques); app.charge = true; app.erreur = ''; app.copieEnvoi = PUB.dateEnvoi(r.texte) || '?';
       app.envoyeLe = PUB.dateEnvoi(r.texte); app.horsLigne = r.horsLigne; app.dernierChargement = Date.now();
       return true;
     }catch(e){
@@ -2770,8 +2851,106 @@ var CRM_COMMUN_NOMS = ["STAGES_DEFAUT","TYPES_ETAPE","TASK_CATEGORIES_DEFAUT","C
     else if(app.source === 'demo') ouvrirDemo();
   }
 
+  // ---- Gestes en mode « envoi de l'ordinateur » (Thomas, 8 oct. 2026) -------------------------
+  // Le geste est appliqué ici tout de suite (appliquerGesteTache, la fonction du CRM), gardé
+  // chiffré dans la file, puis envoyé à l'ordinateur : écrit dans le dossier OneDrive connecté
+  // (Android), sinon par le bouton « Envoyer à l'ordinateur » (menu Partager, iPhone). Il quitte
+  // la file quand l'envoi suivant de l'ordinateur dit l'avoir appliqué.
+  let gestes = [], texteGestes = '';
+  const nouvelIdGeste = () => 'g' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+  function opDepuis(nom, args){
+    const op = { id: nouvelIdGeste(), clientId: args[0], at: new Date().toISOString() };
+    if(nom === 'creer') return { ...op, type: 'creer', tache: args[1] };
+    if(nom === 'deplacer') return { ...op, type: 'deplacer', taskId: args[1], date: args[2], heure: args[3] || '' };
+    if(nom === 'liberer') return { ...op, type: 'liberer', taskId: args[1] };
+    if(nom === 'cocher'){
+      const { t } = trouverTache(args[0], args[1]);
+      return { ...op, type: 'faite', taskId: args[1], fait: !(t && t.fait), suite: args[2] || '', faitLe: todayIso(), faitA: heureCouranteHHMM() };
+    }
+    throw new Error('Geste inconnu');
+  }
+  // Applique un geste à l'agenda du téléphone (mêmes règles que l'ordinateur).
+  function appliquerIci(op){
+    const sans = op.clientId === TACHES_SANS_DOSSIER_ID;
+    const c = sans ? null : (m.state.clients || []).find(x => x.id === op.clientId);
+    if(!sans && !c) throw new Error('Dossier introuvable sur le téléphone.');
+    const r = appliquerGesteTache(m.agendaActif(), sans ? m.state.tachesSansDossier : c.tasks, c, op, sans);
+    if(!r) return null;
+    if(sans) m.state = { ...m.state, tachesSansDossier: r.tasks };
+    else m.state = { ...m.state, clients: m.state.clients.map(x => x.id === c.id ? { ...x, tasks: r.tasks, ...(r.patch || {}) } : x) };
+    m._memoStore = {};
+    return r;
+  }
+  async function garderGestes(){
+    texteGestes = gestes.length && codeOuvert ? JSON.stringify(await COFFRE.chiffrer({ format: 'gfx-telephone-gestes', version: 1, ops: gestes }, codeOuvert)) : '';
+    await PUB.garderGestes(texteGestes);
+  }
+  // Après chaque envoi de l'ordinateur : on retire ce qu'il a appliqué, on réapplique le reste.
+  async function reprendreGestes(appliques){
+    if(!gestes.length){
+      const t = await PUB.gestesGardes();
+      if(t){ try{ const d = await COFFRE.dechiffrer(t, codeOuvert); gestes = Array.isArray(d.ops) ? d.ops : []; }catch(e){ gestes = []; } }
+    }
+    const faits = new Set(appliques || []);
+    gestes = gestes.filter(g => !faits.has(g.id));
+    gestes.forEach(g => { try{ appliquerIci(g); }catch(e){} });
+    await garderGestes();
+    if(gestes.length && app.dossierEnvoi) await envoyerGestes(false);
+  }
+  // Partager le fichier (menu Partager du téléphone : « Enregistrer dans Fichiers » › OneDrive).
+  async function partagerGestes(){
+    if(!texteGestes) return false;
+    const nom = 'CRM GFX - gestes ' + new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-') + '.json';
+    const f = new File([texteGestes], nom, { type: 'application/json' });
+    if(navigator.canShare && navigator.canShare({ files: [f] })){
+      try{ await navigator.share({ files: [f], title: 'CRM GFX' }); return true; }catch(e){ return false; }
+    }
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(f); a.download = nom; document.body.appendChild(a); a.click();
+    setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 3000);
+    return true;
+  }
+  // Toujours toute la file (l'ordinateur ignore ce qu'il a déjà appliqué). manuel : après un toucher.
+  async function envoyerGestes(manuel){
+    if(!gestes.length || !texteGestes) return true;
+    let ok = false;
+    if(app.dossierEnvoi){ try{ ok = await PUB.ecrireDansDossier(PUB.FICHIER_GESTES, texteGestes, manuel); }catch(e){ ok = false; } }
+    app.envoiAuto = ok;
+    if(!ok && manuel) ok = await partagerGestes();
+    if(ok) gestes.forEach(g => { g.envoye = true; });
+    return ok;
+  }
+  async function gesteTelephone(nom, ...args){
+    if(app.ecriture) return null;
+    app.ecriture = true; rendreMessage();
+    try{
+      const op = opDepuis(nom, args);
+      const r = appliquerIci(op);
+      app.feuille = null;
+      if(!r){ annoncer('Rien à changer'); return null; }
+      gestes.push(op);
+      await garderGestes();
+      const parti = await envoyerGestes(false);
+      annoncer(r.message + (parti ? ' — envoyé à l’ordinateur' : ' — à envoyer à l’ordinateur'));
+      return r;
+    }catch(e){
+      if(e && e.suiteRequise){ ouvrirSuite(args[0], args[1]); return null; }
+      app.erreur = e && e.message ? e.message : String(e);
+      return null;
+    }finally{ app.ecriture = false; rendre(); }
+  }
+  // Bandeau : ce qui attend l'ordinateur.
+  function bandeauGestes(){
+    if(app.source !== 'publication' || !gestes.length) return '';
+    const n = gestes.length, auto = app.envoiAuto;
+    return '<div class="bandeau-gestes" style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin:0 0 10px;padding:9px 12px;border-radius:10px;border:1px solid rgba(201,162,75,.6);background:rgba(201,162,75,.12);">'
+      + '<span>📤 ' + n + ' changement' + (n > 1 ? 's' : '') + (auto ? ' envoyé' + (n > 1 ? 's' : '') + ' : l’ordinateur les prendra à sa prochaine minute' : ' à envoyer à l’ordinateur') + '</span>'
+      + (auto ? '' : '<button class="bouton or" data-action="envoyer-gestes">Envoyer</button>') + '</div>';
+  }
+
   // ---- Gestes : créer, déplacer, cocher (écriture) ----------------------------------------
   async function geste(nom, ...args){
+    if(app.source === 'publication') return gesteTelephone(nom, ...args);
     if(!peutEcrire()){ annoncer('Connecte-toi pour modifier.'); return null; }
     if(app.ecriture) return null;
     app.ecriture = true; rendreMessage();
@@ -2799,7 +2978,7 @@ var CRM_COMMUN_NOMS = ["STAGES_DEFAUT","TYPES_ETAPE","TASK_CATEGORIES_DEFAUT","C
 
   // ---- Sécurité : verrouillage après inactivité -------------------------------------------
   function verrouiller(raison){
-    M.vider(m); lecteur = null; codeOuvert = null; OD.deconnecter();
+    M.vider(m); lecteur = null; codeOuvert = null; gestes = []; texteGestes = ''; OD.deconnecter();
     app.charge = false; app.fiche = null; app.moi = null; app.navigation = null; app.feuille = null;
     $('verrou-texte').textContent = raison || ('Après ' + delaiVerrou() + ' minutes sans activité, les données sont effacées du téléphone.');
     $('verrou').hidden = false;
@@ -2869,7 +3048,7 @@ var CRM_COMMUN_NOMS = ["STAGES_DEFAUT","TYPES_ETAPE","TASK_CATEGORIES_DEFAUT","C
       + '<button class="rond" data-action="decaler" data-n="-1" aria-label="Précédent">‹</button><button class="rond" data-action="aujourdhui">Auj.</button><button class="rond" data-action="decaler" data-n="1" aria-label="Suivant">›</button></div>'
       + '<div class="ligne-outils"><div class="segment segment-vues" role="group" aria-label="Vue">'
       + VUES_TEL.map(v => '<button data-action="vue" data-vue="' + v + '" aria-pressed="' + (vue === v) + '">' + esc(CAL.vue(v).libelle) + '</button>').join('') + '</div>'
-      + boutonFiltres() + '</div>' + blocConformite();
+      + boutonFiltres() + '</div>' + bandeauGestes() + blocConformite();
     let corps;
     if(vue === 'planning') corps = vuePlanning();
     else if(vue === 'mois') corps = vueMois();
@@ -3036,8 +3215,8 @@ var CRM_COMMUN_NOMS = ["STAGES_DEFAUT","TYPES_ETAPE","TASK_CATEGORIES_DEFAUT","C
       const dur = [15, 30, 45, 60, 90, 120];
       h = '<h3>' + (creer ? 'Nouvelle tâche' : 'Déplacer') + '</h3>'
         + (creer ? '<input class="champ-saisie" id="f-texte" placeholder="Titre" value="' + esc(f.texte || '') + '" autocomplete="off">'
-          + '<input class="champ-saisie" id="f-client" list="f-clients" placeholder="Dossier (vide = sans dossier)" value="' + esc(f.client || '') + '" autocomplete="off">'
-          + '<datalist id="f-clients">' + (m.state.clients || []).filter(c => !c.archive).map(c => '<option value="' + esc(c.nom) + '"></option>').join('') + '</datalist>'
+          + '<input class="champ-saisie" id="f-client" placeholder="👤 Contact : nom ou téléphone (vide = sans dossier)" value="' + esc(f.client || '') + '" autocomplete="off" autocapitalize="words">'
+          + '<div id="f-suggestions" class="f-suggestions"></div>'
           + '<select class="champ-saisie" id="f-type"><option value="">Type de tâche</option>' + (typeof TASK_CATEGORIES !== 'undefined' ? TASK_CATEGORIES : []).map(c => '<option value="' + esc(c) + '"' + (f.categorie === c ? ' selected' : '') + '>' + esc(iconeCategorie(c) + ' ' + c) + '</option>').join('') + '</select>' : '')
         + '<div class="f-rang"><label>Date<input class="champ-saisie" type="date" id="f-date" value="' + esc(f.date) + '"></label>'
         + '<label>Heure<input class="champ-saisie" type="time" id="f-heure" value="' + esc(f.heure || '') + '"' + (f.fixe ? '' : ' disabled') + '></label></div>'
@@ -3134,6 +3313,7 @@ var CRM_COMMUN_NOMS = ["STAGES_DEFAUT","TYPES_ETAPE","TASK_CATEGORIES_DEFAUT","C
           : (PUB.dossierPossible() ? '<p><button class="bouton or" data-action="connecter-dossier">📁 Connecter le dossier (une seule fois)</button></p>' : '')
             + '<p><button class="bouton' + (PUB.dossierPossible() ? ' second' : ' or') + '" data-action="importer">📥 Importer le fichier</button></p>')
         + '<p class="note">Sur l’ordinateur : CRM › Réglages › 📱 Téléphone.</p>'
+        + '<p class="note">Ce que tu crées, coches ou déplaces ici part vers l’ordinateur : ' + (app.dossierEnvoi ? 'tout seul, par le dossier connecté' : 'bouton « Envoyer » en haut de l’agenda, puis Enregistrer dans Fichiers › OneDrive › ton dossier d’envoi') + '. L’ordinateur l’applique à sa prochaine minute.</p>'
         + (codeMemorise() ? '<p class="note">🔑 Code gardé sur ce téléphone : l’agenda s’ouvre sans le demander. <button class="bouton second" data-action="oublier-code">Oublier le code</button></p>' : '')
         + '</div>';
     } else {
@@ -3166,7 +3346,7 @@ var CRM_COMMUN_NOMS = ["STAGES_DEFAUT","TYPES_ETAPE","TASK_CATEGORIES_DEFAUT","C
       + CAL.MODES_COULEUR.map(mc => '<option value="' + mc.id + '"' + (mc.id === modeCouleur() ? ' selected' : '') + '>' + esc(mc.libelle) + '</option>').join('') + '</select></div>';
     h += '<div class="bloc"><h3>Démonstration</h3><p class="note">Des dossiers fictifs, au même format que ton dossier OneDrive. Tu peux y créer, déplacer et cocher : rien n’est envoyé nulle part.</p><p><button class="bouton second" data-action="demo">Ouvrir la démo</button></p></div>';
     h += '<div class="bloc"><h3>Sécurité</h3><p class="note">' + (PUB.actif()
-        ? 'Lecture seule : le téléphone ne modifie rien. L’envoi de l’ordinateur reste <strong>chiffré</strong> dans ton OneDrive et sur le téléphone ; il n’est ouvert qu’en mémoire. Ton code est gardé sur ce téléphone : garde le téléphone verrouillé (empreinte, visage ou NIP).'
+        ? 'Le téléphone ne modifie que des <strong>tâches</strong> (créer, cocher, déplacer) ; l’ordinateur applique ces gestes avec les mêmes règles. Tout ce qui passe par ton OneDrive et ce qui reste sur le téléphone est <strong>chiffré</strong> ; c’est ouvert en mémoire seulement. Ton code est gardé sur ce téléphone : garde le téléphone verrouillé (empreinte, visage ou NIP).'
         : 'Le téléphone modifie seulement les <strong>tâches</strong> (dans les fichiers du CRM), en vérifiant que l’ordinateur n’a rien changé entre-temps. Il n’efface aucun document. Les données restent en mémoire pendant l’utilisation : rien n’est enregistré sur le téléphone.') + '</p>'
       + '<label class="note" for="cfg-verrou">Verrouiller et tout effacer après</label><select class="champ-saisie" id="cfg-verrou">'
       + DELAIS_VERROU.map(n => '<option value="' + n + '"' + (n === delaiVerrou() ? ' selected' : '') + '>' + n + ' minutes sans activité</option>').join('') + '</select></div>';
@@ -3306,6 +3486,8 @@ var CRM_COMMUN_NOMS = ["STAGES_DEFAUT","TYPES_ETAPE","TASK_CATEGORIES_DEFAUT","C
     else if(a === 'demo'){ app.onglet = 'agenda'; ouvrirDemo(); return; }
     else if(a === 'importer'){ choisirFichier(); return; }
     else if(a === 'basculer-conformite'){ app.conformiteOuverte = !app.conformiteOuverte; }
+    else if(a === 'envoyer-gestes'){ const ok = await envoyerGestes(true); annoncer(ok ? 'Envoyé : l’ordinateur l’appliquera à sa prochaine minute.' : 'Pas envoyé.'); }
+    else if(a === 'choisir-contact'){ const champ = $('f-client'); if(champ) champ.value = el.dataset.nom || ''; const s = $('f-suggestions'); if(s) s.innerHTML = ''; return; }
     else if(a === 'connecter-dossier'){ connecterDossierEnvoi(); return; }
     else if(a === 'mettre-a-jour'){ mettreAJourEnvoi(); return; }
     else if(a === 'oublier-code'){ memoriserCode(''); annoncer('Code oublié : il sera demandé à la prochaine ouverture.'); }
@@ -3338,6 +3520,11 @@ var CRM_COMMUN_NOMS = ["STAGES_DEFAUT","TYPES_ETAPE","TASK_CATEGORIES_DEFAUT","C
     if(ev.key === 'Enter' && ev.target && ev.target.id === 'code-ouverture'){ ev.preventDefault(); const b = document.querySelector('[data-action="ouvrir-code"]'); if(b) b.click(); }
   });
   document.addEventListener('input', (ev) => {
+    if(ev.target.id === 'f-client'){
+      const s = $('f-suggestions'), q = ev.target.value.trim();
+      if(s) s.innerHTML = q.length < 2 ? '' : M.chercherClients(m, q).slice(0, 6).map(c => '<button type="button" class="bouton second" data-action="choisir-contact" data-nom="' + esc(c.nom) + '" style="display:block;width:100%;text-align:left;margin:4px 0;">👤 ' + esc(c.nom) + (valeur(c.telephone) ? ' <small style="opacity:.7">· ' + esc(valeur(c.telephone)) + '</small>' : '') + '</button>').join('');
+      return;
+    }
     if(ev.target.id === 'recherche'){ app.recherche = ev.target.value; const l = $('liste-clients'); if(l) l.innerHTML = listeClients(); }
   });
   document.addEventListener('change', (ev) => {
