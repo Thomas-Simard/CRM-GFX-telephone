@@ -94,8 +94,8 @@
   .fiche-tete h2{ font-size:23px; }
   .fiche-tete .sous{ color:var(--texte-3); font-size:13px; margin-top:3px; }
   .actions{ display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin-bottom:14px; }
-  .actions a, .actions span{ display:flex; flex-direction:column; align-items:center; gap:3px; background:var(--marine); color:#fff; text-decoration:none; border-radius:12px; padding:10px 4px; font-weight:600; font-size:12.5px; }
-  .actions span{ background:var(--surface-2); color:var(--texte-3); }
+  .actions > a, .actions > button, .actions > span{ border:none; font-family:inherit; cursor:pointer; display:flex; flex-direction:column; align-items:center; gap:3px; background:var(--marine); color:#fff; text-decoration:none; border-radius:12px; padding:10px 4px; font-weight:600; font-size:12.5px; }
+  .actions > span{ background:var(--surface-2); color:var(--texte-3); cursor:default; }
   .actions .ic{ font-size:19px; }
   .bloc{ background:var(--surface); border:1px solid var(--trait); border-radius:12px; padding:12px 14px; margin-bottom:12px; }
   .bloc h3{ font-size:15px; margin-bottom:8px; }
@@ -2731,6 +2731,11 @@ var CRM_COMMUN_NOMS = ["STAGES_DEFAUT","TYPES_ETAPE","TASK_CATEGORIES_DEFAUT","C
   const nomClient = (x) => x.client && !x.client._sansDossier ? x.client.nom : 'Sans dossier';
   const valeur = (v) => v && v !== '—' ? String(v) : '';
   const telLien = (t) => String(t || '').replace(/[^\d+]/g, '');
+  // Appeler ou texter (Thomas, 8 oct. 2026) : au choix, le téléphone, Messages ou son CRM
+  // (LeadConnector / GoHighLevel par défaut, nom et lien réglables). Le CRM n'a pas de lien vers
+  // la fiche d'un contact : on copie le numéro, puis on ouvre l'application.
+  const crmAppel = () => ({ nom: String(config().crmNom || '').trim() || 'LeadConnector (GHL)', lien: /^https?:\/\//.test(config().crmLien || '') ? config().crmLien : 'https://app.leadconnectorhq.com/' });
+  const boutonContacter = (tel, nom, mode, classe, contenu) => '<button type="button" class="' + classe + '" data-action="contacter" data-tel="' + esc(tel) + '" data-nom="' + esc(nom || '') + '" data-mode="' + mode + '">' + contenu + '</button>';
   function dureeTxt(min){ return min >= 60 ? Math.floor(min / 60) + ' h' + (min % 60 ? ' ' + String(min % 60).padStart(2, '0') : '') : min + ' min'; }
   const seqNoms = () => (typeof SEQUENCES_SUIVI !== 'undefined' ? SEQUENCES_SUIVI : []).map(q => String(q.nom || '').trim()).filter(Boolean);
   const couleurDe = (x, p) => CAL.couleurEvenement(x, modeCouleur(), p.plages, seqNoms());
@@ -3190,6 +3195,17 @@ var CRM_COMMUN_NOMS = ["STAGES_DEFAUT","TYPES_ETAPE","TASK_CATEGORIES_DEFAUT","C
     const f = app.feuille;
     if(!f) return '';
     let h = '';
+    if(f.type === 'contacter'){
+      const crm = crmAppel(), num = telLien(f.tel), texto = f.mode === 'texto';
+      h = '<h3>' + (texto ? '💬 Texto' : '📞 Appeler') + (f.nom ? ' — ' + esc(f.nom) : '') + '</h3><p class="note">' + esc(f.tel) + '</p>'
+        + '<div class="f-actions contacter-choix" style="flex-direction:column;align-items:stretch;">'
+        + '<a class="bouton" href="tel:' + esc(num) + '">📞 Téléphone</a>'
+        + '<a class="bouton' + (texto ? '' : ' second') + '" href="sms:' + esc(num) + '">💬 Messages</a>'
+        + '<button class="bouton or" data-action="ouvrir-crm" data-tel="' + esc(f.tel) + '">🟦 ' + esc(crm.nom) + '</button>'
+        + '<p class="note" style="margin:2px 0 0;">' + esc(crm.nom) + ' : le numéro est copié, colle-le dans sa recherche.</p>'
+        + '<button class="bouton second" data-action="fermer-feuille">Annuler</button></div>';
+      return '<div class="voile" data-action="fermer-feuille"></div><div class="feuille" role="dialog" aria-label="Contacter"><div class="poignee"></div>' + h + '</div>';
+    }
     if(f.type === 'evenement' && f.genre === 'blocage'){
       const b = (m.state.agendaBlocages || []).find(z => z.id === f.id);
       if(!b) return '';
@@ -3210,7 +3226,7 @@ var CRM_COMMUN_NOMS = ["STAGES_DEFAUT","TYPES_ETAPE","TASK_CATEGORIES_DEFAUT","C
         + (String(t.description || '').trim() ? '<div class="f-ligne"><span>Détails</span>' + esc(t.description) + '</div>' : '')
         + '<div class="f-actions">'
         + (peutEcrire() ? '<button class="bouton" data-action="cocher" data-client="' + esc(f.clientId) + '" data-tache="' + esc(f.taskId) + '" data-fait="' + (t.fait ? 1 : 0) + '">' + (t.fait ? '↺ Remettre à faire' : '✓ Marquer faite') + '</button>' : '')
-        + (tel ? '<a class="bouton second" href="tel:' + esc(telLien(tel)) + '">📞 Appeler</a>' : '')
+        + (tel ? boutonContacter(tel, c && c.nom, 'appel', 'bouton second', '📞 Appeler') : '')
         + (vrai ? '<button class="bouton second" data-action="fiche" data-id="' + esc(f.clientId) + '">Fiche</button>' : '')
         + (peutEcrire() && !t.fait ? '<button class="bouton second" data-action="deplacer">🕘 Déplacer</button>' : '')
         + (peutEcrire() && !t.fait && !f.sansPlace && f.debutMin != null && !hhmmValide(t.heure) && !t.planFixe ? '<button class="bouton second" data-action="fixer">Fixer à cette heure</button>' : '')
@@ -3288,7 +3304,7 @@ var CRM_COMMUN_NOMS = ["STAGES_DEFAUT","TYPES_ETAPE","TASK_CATEGORIES_DEFAUT","C
     let h = '<button class="retour" data-action="retour">‹ ' + esc(app.retourFiche === 'clients' || !app.retourFiche ? 'Clients' : app.retourFiche === 'taches' ? 'Tâches' : 'Agenda') + '</button>';
     h += '<div class="fiche-tete"><h2>' + esc([n.prenom, n.nom].filter(Boolean).join(' ') || c.nom) + '</h2><div class="sous">' + esc([c.etape, c.categorie].filter(Boolean).join(' · ')) + '</div></div>';
     h += '<div class="actions">'
-      + (tel ? '<a href="tel:' + esc(telLien(tel)) + '"><span class="ic">📞</span>Appeler</a><a href="sms:' + esc(telLien(tel)) + '"><span class="ic">💬</span>Texto</a>' : '<span><span class="ic">📞</span>Pas de tél.</span><span><span class="ic">💬</span>—</span>')
+      + (tel ? boutonContacter(tel, c.nom, 'appel', 'action-contact', '<span class="ic">📞</span>Appeler') + boutonContacter(tel, c.nom, 'texto', 'action-contact', '<span class="ic">💬</span>Texto') : '<span><span class="ic">📞</span>Pas de tél.</span><span><span class="ic">💬</span>—</span>')
       + (courriel ? '<a href="mailto:' + esc(courriel) + '"><span class="ic">✉️</span>Courriel</a>' : '<span><span class="ic">✉️</span>Pas de courriel</span>') + '</div>';
     h += '<div class="bloc"><h3>Identification</h3><div class="grille">'
       + champ('Prénom', n.prenom) + champ('Nom de famille', n.nom)
@@ -3353,6 +3369,9 @@ var CRM_COMMUN_NOMS = ["STAGES_DEFAUT","TYPES_ETAPE","TASK_CATEGORIES_DEFAUT","C
       + '<li>Copie l’<strong>ID d’application (client)</strong> et l’<strong>ID de l’annuaire (locataire)</strong> ici, puis connecte-toi.</li></ol></details>';
     h += '</div>';
     }
+    h += '<div class="bloc"><h3>Appeler et texter</h3><p class="note">« Appeler » et « Texto » te laissent choisir le téléphone, Messages ou ton CRM.</p>'
+      + '<label class="note" for="cfg-crm-nom">Ton CRM</label><input class="champ-saisie" id="cfg-crm-nom" value="' + esc(crmAppel().nom) + '" autocomplete="off">'
+      + '<label class="note" for="cfg-crm-lien">Lien qui ouvre ton CRM</label><input class="champ-saisie" id="cfg-crm-lien" type="url" value="' + esc(crmAppel().lien) + '" autocomplete="off" spellcheck="false"></div>';
     h += '<div class="bloc"><h3>Agenda</h3><label class="note" for="cfg-couleur">Couleurs des événements</label><select class="champ-saisie" id="cfg-couleur">'
       + CAL.MODES_COULEUR.map(mc => '<option value="' + mc.id + '"' + (mc.id === modeCouleur() ? ' selected' : '') + '>' + esc(mc.libelle) + '</option>').join('') + '</select></div>';
     h += '<div class="bloc"><h3>Démonstration</h3><p class="note">Des dossiers fictifs, au même format que ton dossier OneDrive. Tu peux y créer, déplacer et cocher : rien n’est envoyé nulle part.</p><p><button class="bouton second" data-action="demo">Ouvrir la démo</button></p></div>';
@@ -3496,6 +3515,15 @@ var CRM_COMMUN_NOMS = ["STAGES_DEFAUT","TYPES_ETAPE","TASK_CATEGORIES_DEFAUT","C
     else if(a === 'aller-reglages'){ app.onglet = 'reglages'; }
     else if(a === 'demo'){ app.onglet = 'agenda'; ouvrirDemo(); return; }
     else if(a === 'importer'){ choisirFichier(); return; }
+    else if(a === 'contacter'){ app.feuille = { type: 'contacter', tel: el.dataset.tel, nom: el.dataset.nom, mode: el.dataset.mode, retour: app.feuille }; }
+    else if(a === 'ouvrir-crm'){
+      const crm = crmAppel(), num = el.dataset.tel || '';
+      try{ if(navigator.clipboard && navigator.clipboard.writeText) await navigator.clipboard.writeText(num); }catch(e){}
+      app.feuille = null; rendre();
+      annoncer('📋 ' + num + ' copié — colle-le dans ' + crm.nom);
+      try{ window.open(crm.lien, '_blank', 'noopener'); }catch(e){}
+      return;
+    }
     else if(a === 'basculer-conformite'){ app.conformiteOuverte = !app.conformiteOuverte; }
     else if(a === 'envoyer-gestes'){ const ok = await envoyerGestes(true); annoncer(ok ? 'Envoyé : l’ordinateur l’appliquera à sa prochaine minute.' : 'Pas envoyé.'); }
     else if(a === 'choisir-contact'){ const champ = $('f-client'); if(champ) champ.value = el.dataset.nom || ''; const s = $('f-suggestions'); if(s) s.innerHTML = ''; return; }
@@ -3542,6 +3570,8 @@ var CRM_COMMUN_NOMS = ["STAGES_DEFAUT","TYPES_ETAPE","TASK_CATEGORIES_DEFAUT","C
     if(ev.target.id === 'fichier-envoi'){ const l = ev.target.files; if(l && l.length) importerEnvoi(l.length > 1 ? l : l[0]); return; }
     if(ev.target.id === 'cfg-verrou'){ OD.ecrireConfig({ ...config(), verrouMin: Number(ev.target.value) }); }
     if(ev.target.id === 'cfg-couleur'){ OD.ecrireConfig({ ...config(), couleur: ev.target.value }); }
+    if(ev.target.id === 'cfg-crm-nom'){ OD.ecrireConfig({ ...config(), crmNom: ev.target.value.trim() }); }
+    if(ev.target.id === 'cfg-crm-lien'){ const v = ev.target.value.trim(); OD.ecrireConfig({ ...config(), crmLien: /^https?:\/\//.test(v) ? v : '' }); }
     if(ev.target.id === 'f-fixe'){
       const h = $('f-heure'), aide = $('f-aide');
       if(h) h.disabled = !ev.target.checked;
