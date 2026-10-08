@@ -2732,13 +2732,33 @@ var CRM_COMMUN_NOMS = ["STAGES_DEFAUT","TYPES_ETAPE","TASK_CATEGORIES_DEFAUT","C
   const valeur = (v) => v && v !== '—' ? String(v) : '';
   const telLien = (t) => String(t || '').replace(/[^\d+]/g, '');
   // Appeler ou texter (Thomas, 8 oct. 2026) : au choix, le téléphone, Messages ou une de ses
-  // applications CRM (GHL et LeadConnector par défaut ; noms et liens réglables). On n'a pas de
-  // lien vers la fiche d'un contact : on copie le numéro, puis on ouvre l'application.
-  const CRM_DEFAUT = [{ nom: 'GHL', lien: 'https://app.gohighlevel.com/' }, { nom: 'LeadConnector', lien: 'https://app.leadconnectorhq.com/' }];
-  const lienValide = (l) => /^https?:\/\//.test(String(l || '').trim());
+  // applications CRM (GHL et LeadConnector par défaut). On n'a pas de lien vers la fiche d'un
+  // contact : on copie le numéro, puis on ouvre l'APPLICATION, jamais son site (Thomas, 8 oct.
+  // 2026). Leurs sites ne déclarent pas les applications (pas d'apple-app-site-association ni
+  // d'assetlinks.json) : un lien web reste dans le navigateur. Android : lien « intent » vers
+  // l'identifiant Google Play de l'application (sinon Google Play s'ouvre sur elle, « Ouvrir »).
+  // iPhone : aucune adresse publique ; on lance un raccourci de l'app Raccourcis (« Ouvrir
+  // l'app »), créé une fois, dont le nom est réglable.
+  const CRM_DEFAUT = [
+    { nom: 'GHL', android: 'com.gohighlevel', raccourci: 'GHL', hote: 'app.gohighlevel.com' },
+    { nom: 'LeadConnector', android: 'com.LeadConnector', raccourci: 'LeadConnector', hote: 'app.leadconnectorhq.com' }];
+  const paquetValide = (p) => /^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$/.test(String(p || '').trim());
   const crmApps = () => {
     const l = Array.isArray(config().crmApps) ? config().crmApps : CRM_DEFAUT;
-    return CRM_DEFAUT.map((d, i) => { const x = l[i] || {}; return { nom: String(x.nom || '').trim() || d.nom, lien: lienValide(x.lien) ? String(x.lien).trim() : d.lien }; });
+    return CRM_DEFAUT.map((d, i) => { const x = l[i] || {}; return { nom: String(x.nom || '').trim() || d.nom, android: paquetValide(x.android) ? String(x.android).trim() : d.android, raccourci: String(x.raccourci || '').trim() || d.raccourci, hote: d.hote }; });
+  };
+  const plateforme = () => {
+    if(window.GFXM_PLATEFORME_TEST) return window.GFXM_PLATEFORME_TEST;
+    const ua = navigator.userAgent || '';
+    if(/android/i.test(ua)) return 'android';
+    if(/iPhone|iPad|iPod/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1)) return 'iphone';
+    return 'ordinateur';
+  };
+  const lienApplication = (crm) => {
+    const p = plateforme();
+    if(p === 'android') return 'intent://' + crm.hote + '/#Intent;scheme=https;package=' + crm.android + ';end';
+    if(p === 'iphone') return 'shortcuts://run-shortcut?name=' + encodeURIComponent(crm.raccourci);
+    return 'https://' + crm.hote + '/';
   };
   const boutonContacter = (tel, nom, mode, classe, contenu) => '<button type="button" class="' + classe + '" data-action="contacter" data-tel="' + esc(tel) + '" data-nom="' + esc(nom || '') + '" data-mode="' + mode + '">' + contenu + '</button>';
   function dureeTxt(min){ return min >= 60 ? Math.floor(min / 60) + ' h' + (min % 60 ? ' ' + String(min % 60).padStart(2, '0') : '') : min + ' min'; }
@@ -3207,7 +3227,7 @@ var CRM_COMMUN_NOMS = ["STAGES_DEFAUT","TYPES_ETAPE","TASK_CATEGORIES_DEFAUT","C
         + '<a class="bouton" href="tel:' + esc(num) + '">📞 Téléphone</a>'
         + '<a class="bouton' + (texto ? '' : ' second') + '" href="sms:' + esc(num) + '">💬 Messages</a>'
         + crms.map((crm, i) => '<button class="bouton or" data-action="ouvrir-crm" data-i="' + i + '" data-tel="' + esc(f.tel) + '">🟦 ' + esc(crm.nom) + '</button>').join('')
-        + '<p class="note" style="margin:2px 0 0;">' + esc(crms.map(x => x.nom).join(' ou ')) + ' : le numéro est copié, colle-le dans sa recherche.</p>'
+        + '<p class="note" style="margin:2px 0 0;">' + esc(crms.map(x => x.nom).join(' ou ')) + ' : le numéro est copié, l’application s’ouvre ; colle-le dans sa recherche.' + (plateforme() === 'iphone' ? ' Sur iPhone, il faut d’abord créer les raccourcis (Réglages › Appeler et texter).' : '') + '</p>'
         + '<button class="bouton second" data-action="fermer-feuille">Annuler</button></div>';
       return '<div class="voile" data-action="fermer-feuille"></div><div class="feuille" role="dialog" aria-label="Contacter"><div class="poignee"></div>' + h + '</div>';
     }
@@ -3374,9 +3394,16 @@ var CRM_COMMUN_NOMS = ["STAGES_DEFAUT","TYPES_ETAPE","TASK_CATEGORIES_DEFAUT","C
       + '<li>Copie l’<strong>ID d’application (client)</strong> et l’<strong>ID de l’annuaire (locataire)</strong> ici, puis connecte-toi.</li></ol></details>';
     h += '</div>';
     }
-    h += '<div class="bloc"><h3>Appeler et texter</h3><p class="note">« Appeler » et « Texto » te laissent choisir le téléphone, Messages ou ton CRM.</p>'
+    const iphone = plateforme() === 'iphone';
+    h += '<div class="bloc"><h3>Appeler et texter</h3><p class="note">« Appeler » et « Texto » te laissent choisir le téléphone, Messages ou une application CRM. Le bouton ouvre l’application elle-même, jamais son site.</p>'
+      + (iphone ? '<details class="note" open><summary>Sur iPhone : créer les raccourcis (une fois)</summary><ol style="margin:6px 0 0;padding-left:18px;">'
+        + '<li>Ouvre l’app <strong>Raccourcis</strong> (installée d’office), touche <strong>+</strong>.</li>'
+        + '<li>Ajoute l’action <strong>« Ouvrir l’app »</strong> et choisis l’application (HighLevel, puis Lead Connector).</li>'
+        + '<li>Renomme le raccourci exactement comme ci-dessous (« GHL », puis « LeadConnector »).</li>'
+        + '<li>La première fois, l’iPhone demande la permission : touche « Toujours autoriser ».</li></ol></details>' : '')
       + crmApps().map((x, i) => '<label class="note" for="cfg-crm-nom-' + i + '">Application CRM ' + (i + 1) + '</label><input class="champ-saisie cfg-crm" id="cfg-crm-nom-' + i + '" data-i="' + i + '" data-champ="nom" value="' + esc(x.nom) + '" autocomplete="off">'
-        + '<input class="champ-saisie cfg-crm" id="cfg-crm-lien-' + i + '" data-i="' + i + '" data-champ="lien" type="url" value="' + esc(x.lien) + '" autocomplete="off" spellcheck="false" aria-label="Lien de l’application CRM ' + (i + 1) + '">').join('') + '</div>';
+        + '<label class="note" for="cfg-crm-raccourci-' + i + '">Nom du raccourci (iPhone)</label><input class="champ-saisie cfg-crm" id="cfg-crm-raccourci-' + i + '" data-i="' + i + '" data-champ="raccourci" value="' + esc(x.raccourci) + '" autocomplete="off" spellcheck="false">'
+        + '<label class="note" for="cfg-crm-android-' + i + '">Identifiant de l’application (Android)</label><input class="champ-saisie cfg-crm" id="cfg-crm-android-' + i + '" data-i="' + i + '" data-champ="android" value="' + esc(x.android) + '" autocomplete="off" spellcheck="false">').join('') + '</div>';
     h += '<div class="bloc"><h3>Agenda</h3><label class="note" for="cfg-couleur">Couleurs des événements</label><select class="champ-saisie" id="cfg-couleur">'
       + CAL.MODES_COULEUR.map(mc => '<option value="' + mc.id + '"' + (mc.id === modeCouleur() ? ' selected' : '') + '>' + esc(mc.libelle) + '</option>').join('') + '</select></div>';
     h += '<div class="bloc"><h3>Démonstration</h3><p class="note">Des dossiers fictifs, au même format que ton dossier OneDrive. Tu peux y créer, déplacer et cocher : rien n’est envoyé nulle part.</p><p><button class="bouton second" data-action="demo">Ouvrir la démo</button></p></div>';
@@ -3526,7 +3553,12 @@ var CRM_COMMUN_NOMS = ["STAGES_DEFAUT","TYPES_ETAPE","TASK_CATEGORIES_DEFAUT","C
       try{ if(navigator.clipboard && navigator.clipboard.writeText) await navigator.clipboard.writeText(num); }catch(e){}
       app.feuille = null; rendre();
       annoncer('📋 ' + num + ' copié — colle-le dans ' + crm.nom);
-      try{ window.open(crm.lien, '_blank', 'noopener'); }catch(e){}
+      const lien = lienApplication(crm);
+      try{
+        if(window.GFXM_OUVRIR_TEST) window.GFXM_OUVRIR_TEST(lien);
+        else if(/^https:/.test(lien)) window.open(lien, '_blank', 'noopener');
+        else window.location.href = lien;
+      }catch(e){}
       return;
     }
     else if(a === 'basculer-conformite'){ app.conformiteOuverte = !app.conformiteOuverte; }
@@ -3577,7 +3609,10 @@ var CRM_COMMUN_NOMS = ["STAGES_DEFAUT","TYPES_ETAPE","TASK_CATEGORIES_DEFAUT","C
     if(ev.target.id === 'cfg-couleur'){ OD.ecrireConfig({ ...config(), couleur: ev.target.value }); }
     if(ev.target.classList && ev.target.classList.contains('cfg-crm')){
       const l = crmApps(), i = Number(ev.target.dataset.i) || 0, v = ev.target.value.trim();
-      if(ev.target.dataset.champ === 'nom') l[i].nom = v || CRM_DEFAUT[i].nom; else l[i].lien = lienValide(v) ? v : CRM_DEFAUT[i].lien;
+      const champ = ev.target.dataset.champ;
+      if(champ === 'nom') l[i].nom = v || CRM_DEFAUT[i].nom;
+      else if(champ === 'raccourci') l[i].raccourci = v || CRM_DEFAUT[i].raccourci;
+      else if(champ === 'android') l[i].android = paquetValide(v) ? v : CRM_DEFAUT[i].android;
       OD.ecrireConfig({ ...config(), crmApps: l });
     }
     if(ev.target.id === 'f-fixe'){
