@@ -3437,7 +3437,7 @@ var CRM_COMMUN_NOMS = ["STAGES_DEFAUT","TYPES_ETAPE","TASK_CATEGORIES_DEFAUT","C
     const l = M.chercherClients(m, app.recherche);
     if(!l.length) return '<div class="vide">Aucun client ne correspond.</div>';
     return l.slice(0, 300).map(c => '<button class="client" data-action="fiche" data-id="' + esc(c.id) + '"><span><div class="nom">' + esc(c.nom) + '</div><div class="sous">'
-      + esc([c.etape, valeur(c.telephone)].filter(Boolean).join(' · ')) + '</div></span><span class="fl">›</span></button>').join('')
+      + esc([c.categorie, c.etape, valeur(c.telephone)].filter(Boolean).join(' · ')) + '</div></span><span class="fl">›</span></button>').join('')
       + (l.length > 300 ? '<p class="note">' + (l.length - 300) + ' autres : précise la recherche.</p>' : '');
   }
   function ecranClients(){
