@@ -99,6 +99,9 @@
   .actions .ic{ font-size:19px; }
   .bloc{ background:var(--surface); border:1px solid var(--trait); border-radius:12px; padding:12px 14px; margin-bottom:12px; }
   .bloc h3{ font-size:15px; margin-bottom:8px; }
+  .ligne-produit{ display:block; width:100%; text-align:left; background:var(--surface, #fff); border:1px solid var(--trait, #e3e0d8); border-left:3px solid #C9A24B; border-radius:8px; padding:9px 11px; margin:0 0 8px; font:inherit; font-size:14px; color:inherit; cursor:pointer; }
+  .ligne-produit .comm{ display:block; font-size:12.5px; color:var(--texte-3, #5b6472); margin-top:2px; }
+  .resume-produits{ margin:0 0 10px; }
   .grille{ display:grid; grid-template-columns:1fr 1fr; gap:10px 14px; }
   .champ .e{ font-size:10.5px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; color:var(--texte-3); }
   .champ .v{ font-size:14.5px; margin-top:2px; word-break:break-word; }
@@ -463,7 +466,7 @@ function tacheDeplacee(t, date, heure){
   if(h) return { ...reste, planFixe: true, planDate: date, planHeure: h, echeance: date, echeanceFin: date };
   return { ...reste, echeance: date, echeanceFin: date };
 }
-const TYPES_GESTE_TELEPHONE = ['creer', 'faite', 'deplacer', 'liberer', 'modifier'];
+const TYPES_GESTE_TELEPHONE = ['creer', 'faite', 'deplacer', 'liberer', 'modifier', 'police-creer', 'police-modifier'];
 function tacheDepuisTelephone(t){
   const iso = (d) => /^\d{4}-\d{2}-\d{2}$/.test(d || '') ? d : '';
   const texte = String((t && t.texte) || '').trim().slice(0, 300);
@@ -476,9 +479,50 @@ function tacheDepuisTelephone(t){
   if(t.important) out.important = true;
   return out;
 }
+function policeDepuisGeste(op, polices){
+  const iso = (d) => /^\d{4}-\d{2}-\d{2}$/.test(d || '') ? d : '';
+  const montant = (v) => { const n = Number(String(v).replace(/[\s$ ]/g, '').replace(',', '.')); return isFinite(n) && n >= 0 ? Math.round(n * 100) / 100 : null; };
+  const nettoyer = (ch) => {
+    const out = {};
+    if(PRODUIT_TYPES.indexOf(ch.produit) !== -1) out.produit = ch.produit;
+    if(TARIFICATION_STATUTS.indexOf(ch.statut) !== -1) out.statut = ch.statut;
+    ['compagnie', 'numero'].forEach(k => { if(typeof ch[k] === 'string') out[k] = ch[k].trim().slice(0, 80); });
+    ['couverture', 'primeMensuelle', 'commission'].forEach(k => { if(ch[k] !== undefined && ch[k] !== null && ch[k] !== ''){ const n = montant(ch[k]); if(n !== null) out[k] = n; } });
+    if(typeof ch.commissionRecue === 'boolean') out.commissionRecue = ch.commissionRecue;
+    ['dateVente', 'echeanceTarif'].forEach(k => { if(ch[k] === '') out[k] = ''; else if(iso(ch[k])) out[k] = ch[k]; });
+    return out;
+  };
+  if(op.type === 'police-creer'){
+    const src = op.police || {};
+    if(!/^[A-Za-z0-9_-]{1,60}$/.test(String(src.id || ''))) throw new Error('Produit illisible (identifiant manquant)');
+    if(polices.some(p => p.id === src.id)) return null;
+    const ch = nettoyer(src), produit = ch.produit || PRODUIT_TYPES[0];
+    const pm = ch.primeMensuelle || 0, prime = Math.round(pm * 12 * 100) / 100;
+    const p = { id: String(src.id), produit, statut: ch.statut || 'Recommandé', compagnie: ch.compagnie || '', numero: ch.numero || '',
+      couverture: ch.couverture || 0, primeMensuelle: pm, prime, commission: ch.commission !== undefined ? ch.commission : commissionEstimee(produit, prime),
+      commissionRecue: !!ch.commissionRecue, dateVente: ch.dateVente || '', echeanceTarif: ch.echeanceTarif || '', creeAilleurs: true };
+    return { polices: polices.concat([p]), message: 'Produit « ' + produit + ' » ajouté' };
+  }
+  const p = polices.find(x => x.id === op.policeId);
+  if(!p) throw new Error('Ce produit n’existe plus dans le dossier.');
+  const ch = nettoyer(op.champs || {});
+  if(!Object.keys(ch).length) return null;
+  const maj = { ...p, ...ch };
+  if(ch.primeMensuelle !== undefined) maj.prime = Math.round(ch.primeMensuelle * 12 * 100) / 100;
+  // Commission : celle donnée, sinon réestimée si elle n'avait jamais été saisie à la main.
+  if(ch.commission === undefined && (ch.primeMensuelle !== undefined || ch.produit !== undefined)
+    && (!Number(p.commission) || Number(p.commission) === commissionEstimee(p.produit, p.prime))) maj.commission = commissionEstimee(maj.produit, maj.prime);
+  if(p.origine === 'abf-reco') maj.ajusteAilleurs = true;
+  return { polices: polices.map(x => x.id === p.id ? maj : x), message: 'Produit « ' + maj.produit + ' » modifié' };
+}
 function appliquerGesteTache(agenda, tasks, obj, op, sansDossier){
   const liste = Array.isArray(tasks) ? tasks.slice() : [];
   if(!op || TYPES_GESTE_TELEPHONE.indexOf(op.type) === -1) throw new Error('Geste inconnu');
+  if(op.type === 'police-creer' || op.type === 'police-modifier'){
+    if(sansDossier || !obj) throw new Error('Un produit va toujours dans le dossier d’un client.');
+    const r = policeDepuisGeste(op, Array.isArray(obj.polices) ? obj.polices.slice() : []);
+    return r ? { tasks: liste, patch: { polices: r.polices }, message: r.message } : null;
+  }
   if(op.type === 'creer'){
     const t = tacheDepuisTelephone(op.tache);
     if(!t) throw new Error('Tâche du téléphone illisible');
@@ -1097,17 +1141,38 @@ function jourAvecPlageDes(agenda, date, categorie){
   if(ps.some(p => p.type.categories.length ? typeAccepte(p.type, categorie) : true)) return date;
   return prochainJourAvecPlage(agenda, date, categorie) || date;
 }
+function policeLisible(po){
+  return { id: po.id, produit: po.produit || '', statut: po.statut || '', compagnie: po.compagnie || '', numero: po.numero || '',
+    couverture: Number(po.couverture) || 0, primeMensuelle: Number(primeMensuellePolice(po)) || 0, prime: Number(po.prime) || 0,
+    commission: Number(po.commission) || 0, commissionRecue: !!po.commissionRecue, dateVente: po.dateVente || '', echeanceTarif: po.echeanceTarif || '',
+    deLAbf: po.origine === 'abf-reco' };
+}
+function resumeProduits(polices){
+  const l = (polices || []).filter(Boolean), enCours = l.filter(p => estPotentiel(p.statut));
+  const vendus = l.filter(p => p.statut === 'Approuvé' || p.statut === 'En vigueur');
+  const somme = (a) => a.reduce((n, p) => n + (Number(p.commission) || 0), 0);
+  return { enCours: enCours.length, vendus: vendus.length, commissionEnCours: somme(enCours), moyenneEnCours: enCours.length ? Math.round(somme(enCours) / enCours.length) : 0,
+    commissionRecue: somme(vendus.filter(p => p.commissionRecue)), commissionAttente: somme(vendus.filter(p => !p.commissionRecue)) };
+}
 const ICONES_CATEGORIE = { 'Appel': '📞', 'Message texte': '💬', 'Courriel': '✉️', 'Suivi': '🔁', 'Rendez-vous': '🤝', 'Signature': '✍️',
   'Préparation de dossier': '📋', 'Proposition d’assurance': '📄', 'Envoyer documents': '📤', 'Conformité': '✅' };
 function iconeCategorie(cat){ return ICONES_CATEGORIE[categorieTache(cat || '')] || '•'; }
 const PRODUIT_TYPES = ['Vie','Invalidité','Maladie grave','Épargne','Santé','Hypothécaire'];
+const TARIFICATION_STATUTS = ['Recommandé','En attente','Contre-offre','Approuvé','En vigueur','En souffrance','Refusé'];
 const STATUTS_POTENTIEL = ['Recommandé','En attente','Contre-offre'];
 function estPotentiel(statut){ return STATUTS_POTENTIEL.indexOf(statut) !== -1; }
 const TAUX_COMMISSION_DEFAUT = { 'Vie': 130, 'Invalidité': 130, 'Maladie grave': 130, 'Épargne': 130, 'Santé': 130, 'Hypothécaire': 130 };
 let TAUX_COMMISSION = { ...TAUX_COMMISSION_DEFAUT };
 function tauxCommission(produit){ const v = TAUX_COMMISSION[produit]; return typeof v === 'number' ? v : 130; }
+function commissionEstimee(produit, prime){ return Math.round((Number(prime) || 0) * tauxCommission(produit) / 100); }
+function primeMensuellePolice(p){
+  if(!p) return '';
+  if(p.primeMensuelle !== undefined && p.primeMensuelle !== null && p.primeMensuelle !== '') return p.primeMensuelle;
+  const an = Number(p.prime) || 0;
+  return an ? Math.round(an / 12 * 100) / 100 : '';
+}
 function policeIntacte(p){
-  return !!p && p.statut === 'Recommandé' && !p.dateVente && !String(p.numero || '').trim();
+  return !!p && p.statut === 'Recommandé' && !p.dateVente && !String(p.numero || '').trim() && !p.ajusteAilleurs;
 }
 function produitDepuisReco(nom){
   return /vie/i.test(nom) ? 'Vie'
@@ -1715,7 +1780,7 @@ var CRM_METHODES = {
     return val;
   }
 };
-var CRM_COMMUN_NOMS = ["STAGES_DEFAUT","TYPES_ETAPE","TASK_CATEGORIES_DEFAUT","CATEGORIES_RENOMMEES","CATEGORIES_BASE_AJOUTEES","categorieTache","tacheCategorieAJour","STAGES_CONFIG","STAGES","TYPES_PAR_ETAPE","TASK_CATEGORIES","PIPELINE_AGING_DEFAUT","PIPELINE_AGING","OBJECTIF_HEBDO_DEFAUT","OBJECTIF_HEBDO","TASK_RECURRENCE","recurrenceOption","MODELES_TACHES_DEFAUT","MODELES_TACHES","scorePriorite","typeEtape","estGagnee","estFinale","SEQUENCES_DEFAUT","SEQUENCES_BASE_AJOUTEES","SEQUENCES_SUIVI","normaliserSequences","dateEtapeSequence","tacheEtapeSequence","tacheBasculee","occurrenceSuivante","sequenceAContinuer","etapeSuivanteSequence","tacheDeplacee","TYPES_GESTE_TELEPHONE","tacheDepuisTelephone","appliquerGesteTache","tacheAPartAgenda","tachesConformite","echeanceConformite","FUNNEL_STAGES","STAGES_GAGNEES","estNoShowEtape","estEtapeRdv","estTacheContact","notesIssues","leadDateReponse","pourcentage","heureCouranteHHMM","canalTache","CRENEAUX_CONTACT","JOURS_SEMAINE","jourSemaineIso","leadContacts","JOURNAL_IA_DOSSIER","AGENDA_TYPES_DEFAUT","AGENDA_SEMAINE_DEFAUT","AGENDA_DUREES_DEFAUT","AGENDA_DUREE_DEFAUT","AGENDA_MARGE_DEFAUT","AGENDA_GRILLE_DEFAUT","JOURS_COURTS","hhmmValide","minDe","hhmmDe","heureLisible","normaliserAgenda","lundiIso","semaineDuJour","typeAgenda","plagesDuJour","typeAccepte","dureeTacheAgenda","blocagesDuJour","soustraireSegment","BORNES_MOMENT","prefsAgendaClient","debutSelonPreferences","plagesAcceptant","repartirTachesSouples","planifierJournee","GRACE_TACHE_MANQUEE_MIN","majPrevuJournee","prochainJourAvecPlage","jourAvecPlageDes","ICONES_CATEGORIE","iconeCategorie","PRODUIT_TYPES","STATUTS_POTENTIEL","estPotentiel","TAUX_COMMISSION_DEFAUT","TAUX_COMMISSION","tauxCommission","policeIntacte","produitDepuisReco","chiffresReco","synchroniserPolicesAbf","MOIS_COURTS","DOSSIER_FICHES_ENTRANTES","DOSSIERS_TECHNIQUES","TACHES_SANS_DOSSIER_ID","TACHES_SANS_DOSSIER_NOM","SUBFOLDER_LABELS","FIXED_SUBFOLDERS","SEGMENTATION_DEFAUT","SEGMENTATION_OPTIONS","appliquerReglages","MOMENTS_CONTACT","momentsContact","abfFraicheur","_todayCache","todayIso","todayEpoch","_minuitIso","lastNoteIso","daysBetween","addDays","findAbfJsonHandle","ID_RACINE","CATEGORIE_ABF_RACINE","PROVENANCE_PAR_DEFAUT","estDossierClientDisque","RE_DOSSIER_MENAGE","estDossierMenageDisque","entreeIndexChemin","parseNotesRaw","splitNomDossier","fmtDate","prochainChangementAgeTarif","delaiLisible","texteChangementTarif","newGnId"];
+var CRM_COMMUN_NOMS = ["STAGES_DEFAUT","TYPES_ETAPE","TASK_CATEGORIES_DEFAUT","CATEGORIES_RENOMMEES","CATEGORIES_BASE_AJOUTEES","categorieTache","tacheCategorieAJour","STAGES_CONFIG","STAGES","TYPES_PAR_ETAPE","TASK_CATEGORIES","PIPELINE_AGING_DEFAUT","PIPELINE_AGING","OBJECTIF_HEBDO_DEFAUT","OBJECTIF_HEBDO","TASK_RECURRENCE","recurrenceOption","MODELES_TACHES_DEFAUT","MODELES_TACHES","scorePriorite","typeEtape","estGagnee","estFinale","SEQUENCES_DEFAUT","SEQUENCES_BASE_AJOUTEES","SEQUENCES_SUIVI","normaliserSequences","dateEtapeSequence","tacheEtapeSequence","tacheBasculee","occurrenceSuivante","sequenceAContinuer","etapeSuivanteSequence","tacheDeplacee","TYPES_GESTE_TELEPHONE","tacheDepuisTelephone","policeDepuisGeste","appliquerGesteTache","tacheAPartAgenda","tachesConformite","echeanceConformite","FUNNEL_STAGES","STAGES_GAGNEES","estNoShowEtape","estEtapeRdv","estTacheContact","notesIssues","leadDateReponse","pourcentage","heureCouranteHHMM","canalTache","CRENEAUX_CONTACT","JOURS_SEMAINE","jourSemaineIso","leadContacts","JOURNAL_IA_DOSSIER","AGENDA_TYPES_DEFAUT","AGENDA_SEMAINE_DEFAUT","AGENDA_DUREES_DEFAUT","AGENDA_DUREE_DEFAUT","AGENDA_MARGE_DEFAUT","AGENDA_GRILLE_DEFAUT","JOURS_COURTS","hhmmValide","minDe","hhmmDe","heureLisible","normaliserAgenda","lundiIso","semaineDuJour","typeAgenda","plagesDuJour","typeAccepte","dureeTacheAgenda","blocagesDuJour","soustraireSegment","BORNES_MOMENT","prefsAgendaClient","debutSelonPreferences","plagesAcceptant","repartirTachesSouples","planifierJournee","GRACE_TACHE_MANQUEE_MIN","majPrevuJournee","prochainJourAvecPlage","jourAvecPlageDes","policeLisible","resumeProduits","ICONES_CATEGORIE","iconeCategorie","PRODUIT_TYPES","TARIFICATION_STATUTS","STATUTS_POTENTIEL","estPotentiel","TAUX_COMMISSION_DEFAUT","TAUX_COMMISSION","tauxCommission","commissionEstimee","primeMensuellePolice","policeIntacte","produitDepuisReco","chiffresReco","synchroniserPolicesAbf","MOIS_COURTS","DOSSIER_FICHES_ENTRANTES","DOSSIERS_TECHNIQUES","TACHES_SANS_DOSSIER_ID","TACHES_SANS_DOSSIER_NOM","SUBFOLDER_LABELS","FIXED_SUBFOLDERS","SEGMENTATION_DEFAUT","SEGMENTATION_OPTIONS","appliquerReglages","MOMENTS_CONTACT","momentsContact","abfFraicheur","_todayCache","todayIso","todayEpoch","_minuitIso","lastNoteIso","daysBetween","addDays","findAbfJsonHandle","ID_RACINE","CATEGORIE_ABF_RACINE","PROVENANCE_PAR_DEFAUT","estDossierClientDisque","RE_DOSSIER_MENAGE","estDossierMenageDisque","entreeIndexChemin","parseNotesRaw","splitNomDossier","fmtDate","prochainChangementAgeTarif","delaiLisible","texteChangementTarif","newGnId"];
 </script>
   <script>// Calendrier façon Google Agenda : la logique COMMUNE au CRM pour ordinateur et à la version
 // téléphone (mobile/). Ici, rien ne dessine : les deux écrans reçoivent les mêmes vues, les
@@ -2531,7 +2596,11 @@ var CRM_COMMUN_NOMS = ["STAGES_DEFAUT","TYPES_ETAPE","TASK_CATEGORIES_DEFAUT","C
         { prenom: 'Julie', nomFamille: 'Exemple', dateNaissance: '1986-04-12', sexe: 'Femme', fumeur: 'Non', etatCivil: 'Conjointe de fait',
           telephone: '514-555-0101', courriel: 'julie.exemple@example.com', adresse: '123, rue Fictive, Montréal', emploi: 'Infirmière', employeur: 'Hôpital fictif',
           conjoint: { prenom: 'Marc', nomFamille: 'Exemple', dateNaissance: '1984-09-30', sexe: 'Homme', fumeur: 'Oui' } },
-        { etape: 'Analyse (ABF)', prochaineAction: 'Présenter les recommandations', tasks: [
+        { etape: 'Analyse (ABF)', prochaineAction: 'Présenter les recommandations',
+          // Produits fictifs : une recommandation et une police vendue (écran « Produits » du téléphone).
+          polices: [{ id: 'dp1', produit: 'Vie', statut: 'Recommandé', compagnie: 'Assureur fictif', couverture: 250000, primeMensuelle: 85.5, prime: 1026, commission: 1334, commissionRecue: false, dateVente: '' },
+            { id: 'dp2', produit: 'Invalidité', statut: 'En vigueur', compagnie: 'Assureur fictif', couverture: 3000, primeMensuelle: 62, prime: 744, commission: 967, commissionRecue: false, dateVente: j(-20) }],
+          tasks: [
           { id: 't1', texte: 'Rencontre — présentation des recommandations', categorie: 'Rendez-vous', echeance: auj, echeanceFin: auj, heure: '14:00', dureeMin: 60, fait: false },
           { id: 't2', texte: 'Envoyer la proposition', categorie: 'Proposition d’assurance', echeance: j(2), echeanceFin: j(2), fait: false },
           { id: 't3', texte: 'Recueillir les relevés', categorie: 'Suivi', echeance: j(-3), echeanceFin: j(-3), fait: true, faitLe: j(-3) }
@@ -2948,6 +3017,9 @@ var CRM_COMMUN_NOMS = ["STAGES_DEFAUT","TYPES_ETAPE","TASK_CATEGORIES_DEFAUT","C
     if(nom === 'creer') return { ...op, type: 'creer', tache: args[1] };
     if(nom === 'deplacer') return { ...op, type: 'deplacer', taskId: args[1], date: args[2], heure: args[3] || '' };
     if(nom === 'liberer') return { ...op, type: 'liberer', taskId: args[1] };
+    // Produits (Thomas, 9 oct. 2026) : créer ou modifier une recommandation, un statut, une commission.
+    if(nom === 'police-creer') return { ...op, type: 'police-creer', police: args[1] };
+    if(nom === 'police-modifier') return { ...op, type: 'police-modifier', policeId: args[1], champs: args[2] };
     if(nom === 'cocher'){
       const { t } = trouverTache(args[0], args[1]);
       return { ...op, type: 'faite', taskId: args[1], fait: !(t && t.fait), suite: args[2] || '', faitLe: todayIso(), faitA: heureCouranteHHMM() };
@@ -3036,6 +3108,13 @@ var CRM_COMMUN_NOMS = ["STAGES_DEFAUT","TYPES_ETAPE","TASK_CATEGORIES_DEFAUT","C
   // ---- Gestes : créer, déplacer, cocher (écriture) ----------------------------------------
   async function geste(nom, ...args){
     if(app.source === 'publication') return gesteTelephone(nom, ...args);
+    // Les produits ne se modifient qu'avec l'envoi de l'ordinateur (et en démo, sur le téléphone seulement).
+    if(/^police-/.test(nom)){
+      if(app.source !== 'demo'){ annoncer('Les produits se modifient avec l’envoi de l’ordinateur.'); return null; }
+      try{ const r = appliquerIci(opDepuis(nom, args)); app.feuille = null; annoncer(r ? r.message + ' (démo)' : 'Rien à changer'); return r; }
+      catch(e){ app.erreur = e && e.message ? e.message : String(e); return null; }
+      finally{ rendre(); }
+    }
     if(!peutEcrire()){ annoncer('Connecte-toi pour modifier.'); return null; }
     if(app.ecriture) return null;
     app.ecriture = true; rendreMessage();
@@ -3301,6 +3380,8 @@ var CRM_COMMUN_NOMS = ["STAGES_DEFAUT","TYPES_ETAPE","TASK_CATEGORIES_DEFAUT","C
         + (peutEcrire() && !t.fait && !f.sansPlace && f.debutMin != null && !hhmmValide(t.heure) && !t.planFixe ? '<button class="bouton second" data-action="fixer">Fixer à cette heure</button>' : '')
         + (peutEcrire() && !t.fait && t.planFixe ? '<button class="bouton second" data-action="liberer">↺ Placement automatique</button>' : '')
         + '</div>';
+    } else if(f.type === 'police'){
+      h = feuillePolice(f);
     } else if(f.type === 'suite'){
       h = '<h3>Séquence « ' + esc(f.seqNom) + ' » (' + esc(f.etape) + ')</h3><p class="note">Étape suivante : ' + esc(f.prochain) + '</p>'
         + '<div class="f-actions colonne"><button class="bouton" data-action="suite" data-suite="continuer">Continuer la séquence</button>'
@@ -3362,7 +3443,43 @@ var CRM_COMMUN_NOMS = ["STAGES_DEFAUT","TYPES_ETAPE","TASK_CATEGORIES_DEFAUT","C
   function ecranClients(){
     if(app.fiche) return ecranFiche();
     return '<input class="recherche" id="recherche" type="search" placeholder="Rechercher un nom, un téléphone, un courriel" value="' + esc(app.recherche) + '" autocomplete="off" aria-label="Rechercher un client">'
+      + (() => { const r = resumeProduits([].concat(...(m.state.clients || []).filter(c => c && !c.archive).map(c => c.polices || [])));
+          const t = texteResume(r); return t ? '<p class="note resume-produits">💼 Produits : ' + esc(t) + '</p>' : ''; })()
       + '<div id="liste-clients">' + listeClients() + '</div>';
+  }
+  // ---- Produits et recommandations (Thomas, 9 oct. 2026) ----------------------------------------
+  const argent = (n, dec) => (Number(n) || 0).toLocaleString('fr-CA', { minimumFractionDigits: dec ? 2 : 0, maximumFractionDigits: dec ? 2 : 0 }) + ' $';
+  const texteResume = (r) => [r.enCours ? r.enCours + ' en cours · commission estimée ' + argent(r.commissionEnCours) + ' (moyenne ' + argent(r.moyenneEnCours) + ')' : '',
+    r.vendus ? r.vendus + ' vendu' + (r.vendus > 1 ? 's' : '') + ' · reçue ' + argent(r.commissionRecue) + ' · à recevoir ' + argent(r.commissionAttente) : ''].filter(Boolean).join(' — ');
+  function blocProduits(c){
+    const ordre = (p) => estPotentiel(p.statut) ? 0 : (p.statut === 'Approuvé' || p.statut === 'En vigueur') ? 1 : 2;
+    const pol = (c.polices || []).filter(Boolean).slice().sort((a, b) => ordre(a) - ordre(b));
+    const r = resumeProduits(pol);
+    return '<div class="bloc produits"><h3>Produits et recommandations</h3>'
+      + (pol.length ? '<p class="note">' + esc(texteResume(r) || pol.length + ' produit(s)') + '</p>' : '<p class="note">Aucun produit pour ce client.</p>')
+      + pol.map(p => '<button type="button" class="ligne-produit" data-action="police" data-id="' + esc(p.id) + '"><b>' + esc(p.produit || 'Produit') + '</b> · ' + esc(p.statut || '')
+        + (p.couverture ? ' · ' + argent(p.couverture) : '') + (Number(primeMensuellePolice(p)) ? ' · ' + argent(primeMensuellePolice(p), true) + '/mois' : '')
+        + '<span class="comm">Commission ' + argent(p.commission) + (p.commissionRecue ? ' ✓ reçue' : (p.statut === 'Approuvé' || p.statut === 'En vigueur') ? ' · à recevoir' : '') + '</span></button>').join('')
+      + (peutEcrire() ? '<button type="button" class="bouton second" data-action="police-nouveau">+ Ajouter un produit</button>' : '')
+      + '</div>';
+  }
+  function feuillePolice(f){
+    const c = (m.state.clients || []).find(x => x.id === f.clientId);
+    const p = c && f.policeId ? (c.polices || []).find(x => x.id === f.policeId) : null;
+    const v = p || { produit: PRODUIT_TYPES[0], statut: 'Recommandé', couverture: '', primeMensuelle: '', commission: '', compagnie: '', commissionRecue: false, dateVente: '' };
+    const opt = (liste, choisi) => liste.map(x => '<option value="' + esc(x) + '"' + (x === choisi ? ' selected' : '') + '>' + esc(x) + '</option>').join('');
+    const nombre = (x) => (x === '' || x === null || x === undefined || !Number(x)) ? '' : String(x).replace('.', ',');
+    return '<h3>' + (p ? 'Modifier le produit' : 'Nouveau produit') + '</h3>'
+      + '<div class="f-rang"><label>Produit<select class="champ-saisie" id="f-produit">' + opt(PRODUIT_TYPES, v.produit) + '</select></label>'
+      + '<label>Statut<select class="champ-saisie" id="f-statut">' + opt(TARIFICATION_STATUTS, v.statut) + '</select></label></div>'
+      + '<label>Compagnie<input class="champ-saisie" id="f-compagnie" value="' + esc(v.compagnie || '') + '" autocomplete="off"></label>'
+      + '<div class="f-rang"><label>Capital ($)<input class="champ-saisie" id="f-couverture" inputmode="decimal" value="' + esc(nombre(v.couverture)) + '"></label>'
+      + '<label>Prime par mois ($)<input class="champ-saisie" id="f-prime" inputmode="decimal" value="' + esc(nombre(primeMensuellePolice(v))) + '"></label></div>'
+      + '<div class="f-rang"><label>Commission ($)<input class="champ-saisie" id="f-commission" inputmode="decimal" placeholder="estimée selon la prime" value="' + esc(nombre(v.commission)) + '"></label>'
+      + '<label>Date de vente<input class="champ-saisie" type="date" id="f-vente" value="' + esc(v.dateVente || '') + '"></label></div>'
+      + '<label class="f-case"><input type="checkbox" id="f-recue"' + (v.commissionRecue ? ' checked' : '') + '> Commission reçue</label>'
+      + '<p class="note">Sans commission inscrite, elle est estimée au taux du produit. Un produit écarté passe à « Refusé » : rien n’est effacé.</p>'
+      + '<div class="f-actions"><button class="bouton" data-action="enregistrer-police">Enregistrer</button><button class="bouton second" data-action="fermer-feuille">Annuler</button></div>';
   }
   function ecranFiche(){
     const c = (m.state.clients || []).find(x => x.id === app.fiche);
@@ -3385,6 +3502,7 @@ var CRM_COMMUN_NOMS = ["STAGES_DEFAUT","TYPES_ETAPE","TASK_CATEGORIES_DEFAUT","C
       + (c.conjointNomAbf ? champ('Conjoint(e)', c.conjointNomAbf + (c.conjointNaissance ? ' · né(e) le ' + fmtDate(c.conjointNaissance) + (M.age(c.conjointNaissance) != null ? ' (' + M.age(c.conjointNaissance) + ' ans)' : '') : '') + (c.conjointFumeur ? ' · fumeur : ' + c.conjointFumeur : ''), true) : '')
       + '</div>' + (!c.abfTrouvee ? '<p class="note">Aucune ABF dans ce dossier : identité incomplète.</p>' : '') + '</div>';
     if(c.prochaineAction) h += '<div class="bloc"><h3>Prochaine action</h3><div>' + esc(c.prochaineAction) + '</div></div>';
+    h += blocProduits(c);
     const tasks = (c.tasks || []).slice();
     const ouvertes = tasks.filter(t => !t.fait).sort((a, b) => (a.echeanceFin || a.echeance || '9999').localeCompare(b.echeanceFin || b.echeance || '9999'));
     const faites = tasks.filter(t => t.fait).sort((a, b) => (b.faitLe || '').localeCompare(a.faitLe || '')).slice(0, 5);
@@ -3586,6 +3704,23 @@ var CRM_COMMUN_NOMS = ["STAGES_DEFAUT","TYPES_ETAPE","TASK_CATEGORIES_DEFAUT","C
       const tache = { id: 't' + Date.now(), texte, description: '', categorie: valeurDe('f-type'), echeance: date, echeanceFin: date, fait: false,
         dureeMin: Number(valeurDe('f-duree')) || 30, ...(fixe && hhmmValide(heure) ? { heure } : {}) };
       geste('creer', cible, tache); return;
+    }
+    else if(a === 'police'){ app.feuille = { type: 'police', clientId: app.fiche, policeId: el.dataset.id }; }
+    else if(a === 'police-nouveau'){ app.feuille = { type: 'police', clientId: app.fiche, policeId: '' }; }
+    else if(a === 'enregistrer-police'){
+      const f = app.feuille, c = (m.state.clients || []).find(x => x.id === f.clientId);
+      const p = c && f.policeId ? (c.polices || []).find(x => x.id === f.policeId) : null;
+      const lu = (id) => String(valeurDe(id)).replace(/\s/g, '').replace(',', '.');
+      const champs = { produit: valeurDe('f-produit'), statut: valeurDe('f-statut'), compagnie: valeurDe('f-compagnie').trim(),
+        couverture: lu('f-couverture') || 0, primeMensuelle: lu('f-prime') || 0, commissionRecue: !!($('f-recue') || {}).checked, dateVente: valeurDe('f-vente') };
+      const comm = lu('f-commission');
+      if(!p){ if(comm !== '') champs.commission = comm; geste('police-creer', f.clientId, { id: 'p' + Date.now().toString(36), ...champs }); return; }
+      // On n'envoie que ce qui a changé : une prime changée réestime la commission si elle n'a jamais été saisie.
+      const avant = { produit: p.produit, statut: p.statut, compagnie: p.compagnie || '', couverture: Number(p.couverture) || 0, primeMensuelle: Number(primeMensuellePolice(p)) || 0, commissionRecue: !!p.commissionRecue, dateVente: p.dateVente || '' };
+      const diff = {};
+      Object.keys(champs).forEach(k => { const a2 = champs[k], b2 = avant[k]; if(typeof b2 === 'number' ? Number(a2) !== b2 : a2 !== b2) diff[k] = a2; });
+      if(comm !== '' && Number(comm) !== (Number(p.commission) || 0)) diff.commission = comm;
+      geste('police-modifier', f.clientId, p.id, diff); return;
     }
     else if(a === 'fiche'){ app.retourFiche = app.onglet; app.fiche = el.dataset.id; app.onglet = 'clients'; app.feuille = null; window.scrollTo(0, 0); }
     else if(a === 'retour'){ const r = app.retourFiche; app.fiche = null; app.onglet = r && r !== 'clients' ? r : 'clients'; app.retourFiche = null; }
