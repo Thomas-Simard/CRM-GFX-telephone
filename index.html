@@ -1354,12 +1354,14 @@ function _minuitIso(iso){
 function lastNoteIso(raw){ if(!raw) return null; const m = raw.match(/^(\d{4}-\d{2}-\d{2})/); return m ? m[1] : null; }
 function daysBetween(iso){ if(!iso) return Infinity; return Math.floor((todayEpoch() - _minuitIso(iso)) / 86400000); }
 function addDays(iso, n){ const d = new Date(iso); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0,10); }
+const COPIE_CONFLIT_CRM = /^_crm[\s\-(].*\.json$/i;
+const COPIE_CONFLIT_RACINE = /^_(taches|agenda|reglages|notes_generales|corbeille|journal|index|modeles|champs_perso|exports)[\s\-(].*\.json$/i;
 async function findAbfJsonHandle(dirHandle){
   try{ return await dirHandle.getFileHandle(dirHandle.name + '.json'); }catch(e){}
   try{
     for await (const [fname, entry] of dirHandle.entries()){
       // `.ouvert-par.json` (témoin d'ouverture posé par l'ABF) n'est pas une ABF.
-      if(entry.kind === 'file' && fname.toLowerCase().endsWith('.json') && fname !== '_crm.json' && fname !== '_index.json' && !fname.toLowerCase().startsWith('_presentation-vie-') && fname.charAt(0) !== '.') return entry;
+      if(entry.kind === 'file' && fname.toLowerCase().endsWith('.json') && fname !== '_crm.json' && fname !== '_index.json' && !fname.toLowerCase().startsWith('_presentation-vie-') && fname.charAt(0) !== '.' && !COPIE_CONFLIT_CRM.test(fname)) return entry;
     }
   }catch(e){}
   return null;
@@ -1466,13 +1468,14 @@ function texteChangementTarif(naissanceIso, todayStr){
 function newGnId(prefix){ return prefix + Date.now().toString(36) + Math.random().toString(36).slice(2,6); }
 var CRM_METHODES = {
   async scanRoot(rootHandle){
+    const debutLecture = Date.now(), conflitsRacine = [];
     const index = (await this.readJson(rootHandle, '_index.json')) || {};
     const clients = [];
     this.groupHandles = {};
     this.racineHandle = rootHandle;
     const groupesIllisibles = [];
     for await (const [groupName, groupEntry] of rootHandle.entries()){
-      if(groupEntry.kind !== 'directory') continue;
+      if(groupEntry.kind !== 'directory'){ if(COPIE_CONFLIT_RACINE.test(groupName)) conflitsRacine.push(groupName); continue; }
       // Seuls les dossiers techniques CONNUS sont ignorés. Écarter tout nom commençant par
       // « _ » était trop large : une provenance nommée « _Perso » aurait fait disparaître
       // silencieusement tous les dossiers qu'elle contient.
@@ -1530,6 +1533,7 @@ var CRM_METHODES = {
     if(groupesIllisibles.length){
       this.pushToast('Provenance(s) illisible(s) : ' + groupesIllisibles.join(', ') + '. Les dossiers qu’elles contiennent ne sont pas affichés.', { kind:'err', duration: 14000 });
     }
+    this._sante = { ...(this._sante || {}), lecture: { ms: Date.now() - debutLecture, nb: clients.length, quand: Date.now() }, conflitsRacine };
     return clients;
   },
   async buildClient(dirHandle, provenance, indexEntry, groupHandle, menageNom){
@@ -1560,6 +1564,8 @@ var CRM_METHODES = {
       try{ await dirHandle.getDirectoryHandle(FIXED_SUBFOLDERS[i]); }
       catch(e){ sousDossiersManquants.push(FIXED_SUBFOLDERS[i]); }
     }
+    const copiesConflit = [];
+    try{ for await (const [nom, e] of dirHandle.entries()) if(e && e.kind === 'file' && COPIE_CONFLIT_CRM.test(nom)) copiesConflit.push(nom); }catch(e){}
     const subEntries = await Promise.all(SUBFOLDER_LABELS.map((label,i) => this.listSubfolder(dirHandle, FIXED_SUBFOLDERS[i], label)));
     const subfolders = {};
     SUBFOLDER_LABELS.forEach((label,i) => subfolders[label] = subEntries[i]);
@@ -1692,7 +1698,7 @@ var CRM_METHODES = {
       // Item 21 : date de la dernière rencontre consignée.
       derniereRencontre: crm.derniereRencontre || '',
       // Diagnostic de fiabilité (items 77 à 80).
-      probleme, sousDossiersManquants, crmModifieLe,
+      probleme, sousDossiersManquants, crmModifieLe, copiesConflit,
       _crmPrecedent: crm,
       appels: Array.isArray(crm.appels) ? crm.appels : [],
       // Échanges où la personne a répondu (tâche, séquence ou rencontre), avec leur durée.
@@ -1780,7 +1786,7 @@ var CRM_METHODES = {
     return val;
   }
 };
-var CRM_COMMUN_NOMS = ["STAGES_DEFAUT","TYPES_ETAPE","TASK_CATEGORIES_DEFAUT","CATEGORIES_RENOMMEES","CATEGORIES_BASE_AJOUTEES","categorieTache","tacheCategorieAJour","STAGES_CONFIG","STAGES","TYPES_PAR_ETAPE","TASK_CATEGORIES","PIPELINE_AGING_DEFAUT","PIPELINE_AGING","OBJECTIF_HEBDO_DEFAUT","OBJECTIF_HEBDO","TASK_RECURRENCE","recurrenceOption","MODELES_TACHES_DEFAUT","MODELES_TACHES","scorePriorite","typeEtape","estGagnee","estFinale","SEQUENCES_DEFAUT","SEQUENCES_BASE_AJOUTEES","SEQUENCES_SUIVI","normaliserSequences","dateEtapeSequence","tacheEtapeSequence","tacheBasculee","occurrenceSuivante","sequenceAContinuer","etapeSuivanteSequence","tacheDeplacee","TYPES_GESTE_TELEPHONE","tacheDepuisTelephone","policeDepuisGeste","appliquerGesteTache","tacheAPartAgenda","tachesConformite","echeanceConformite","FUNNEL_STAGES","STAGES_GAGNEES","estNoShowEtape","estEtapeRdv","estTacheContact","notesIssues","leadDateReponse","pourcentage","heureCouranteHHMM","canalTache","CRENEAUX_CONTACT","JOURS_SEMAINE","jourSemaineIso","leadContacts","JOURNAL_IA_DOSSIER","AGENDA_TYPES_DEFAUT","AGENDA_SEMAINE_DEFAUT","AGENDA_DUREES_DEFAUT","AGENDA_DUREE_DEFAUT","AGENDA_MARGE_DEFAUT","AGENDA_GRILLE_DEFAUT","JOURS_COURTS","hhmmValide","minDe","hhmmDe","heureLisible","normaliserAgenda","lundiIso","semaineDuJour","typeAgenda","plagesDuJour","typeAccepte","dureeTacheAgenda","blocagesDuJour","soustraireSegment","BORNES_MOMENT","prefsAgendaClient","debutSelonPreferences","plagesAcceptant","repartirTachesSouples","planifierJournee","GRACE_TACHE_MANQUEE_MIN","majPrevuJournee","prochainJourAvecPlage","jourAvecPlageDes","policeLisible","resumeProduits","ICONES_CATEGORIE","iconeCategorie","PRODUIT_TYPES","TARIFICATION_STATUTS","STATUTS_POTENTIEL","estPotentiel","TAUX_COMMISSION_DEFAUT","TAUX_COMMISSION","tauxCommission","commissionEstimee","primeMensuellePolice","policeIntacte","produitDepuisReco","chiffresReco","synchroniserPolicesAbf","MOIS_COURTS","DOSSIER_FICHES_ENTRANTES","DOSSIERS_TECHNIQUES","TACHES_SANS_DOSSIER_ID","TACHES_SANS_DOSSIER_NOM","SUBFOLDER_LABELS","FIXED_SUBFOLDERS","SEGMENTATION_DEFAUT","SEGMENTATION_OPTIONS","appliquerReglages","MOMENTS_CONTACT","momentsContact","abfFraicheur","_todayCache","todayIso","todayEpoch","_minuitIso","lastNoteIso","daysBetween","addDays","findAbfJsonHandle","ID_RACINE","CATEGORIE_ABF_RACINE","PROVENANCE_PAR_DEFAUT","estDossierClientDisque","RE_DOSSIER_MENAGE","estDossierMenageDisque","entreeIndexChemin","parseNotesRaw","splitNomDossier","fmtDate","prochainChangementAgeTarif","delaiLisible","texteChangementTarif","newGnId"];
+var CRM_COMMUN_NOMS = ["STAGES_DEFAUT","TYPES_ETAPE","TASK_CATEGORIES_DEFAUT","CATEGORIES_RENOMMEES","CATEGORIES_BASE_AJOUTEES","categorieTache","tacheCategorieAJour","STAGES_CONFIG","STAGES","TYPES_PAR_ETAPE","TASK_CATEGORIES","PIPELINE_AGING_DEFAUT","PIPELINE_AGING","OBJECTIF_HEBDO_DEFAUT","OBJECTIF_HEBDO","TASK_RECURRENCE","recurrenceOption","MODELES_TACHES_DEFAUT","MODELES_TACHES","scorePriorite","typeEtape","estGagnee","estFinale","SEQUENCES_DEFAUT","SEQUENCES_BASE_AJOUTEES","SEQUENCES_SUIVI","normaliserSequences","dateEtapeSequence","tacheEtapeSequence","tacheBasculee","occurrenceSuivante","sequenceAContinuer","etapeSuivanteSequence","tacheDeplacee","TYPES_GESTE_TELEPHONE","tacheDepuisTelephone","policeDepuisGeste","appliquerGesteTache","tacheAPartAgenda","tachesConformite","echeanceConformite","FUNNEL_STAGES","STAGES_GAGNEES","estNoShowEtape","estEtapeRdv","estTacheContact","notesIssues","leadDateReponse","pourcentage","heureCouranteHHMM","canalTache","CRENEAUX_CONTACT","JOURS_SEMAINE","jourSemaineIso","leadContacts","JOURNAL_IA_DOSSIER","AGENDA_TYPES_DEFAUT","AGENDA_SEMAINE_DEFAUT","AGENDA_DUREES_DEFAUT","AGENDA_DUREE_DEFAUT","AGENDA_MARGE_DEFAUT","AGENDA_GRILLE_DEFAUT","JOURS_COURTS","hhmmValide","minDe","hhmmDe","heureLisible","normaliserAgenda","lundiIso","semaineDuJour","typeAgenda","plagesDuJour","typeAccepte","dureeTacheAgenda","blocagesDuJour","soustraireSegment","BORNES_MOMENT","prefsAgendaClient","debutSelonPreferences","plagesAcceptant","repartirTachesSouples","planifierJournee","GRACE_TACHE_MANQUEE_MIN","majPrevuJournee","prochainJourAvecPlage","jourAvecPlageDes","policeLisible","resumeProduits","ICONES_CATEGORIE","iconeCategorie","PRODUIT_TYPES","TARIFICATION_STATUTS","STATUTS_POTENTIEL","estPotentiel","TAUX_COMMISSION_DEFAUT","TAUX_COMMISSION","tauxCommission","commissionEstimee","primeMensuellePolice","policeIntacte","produitDepuisReco","chiffresReco","synchroniserPolicesAbf","MOIS_COURTS","DOSSIER_FICHES_ENTRANTES","DOSSIERS_TECHNIQUES","TACHES_SANS_DOSSIER_ID","TACHES_SANS_DOSSIER_NOM","SUBFOLDER_LABELS","FIXED_SUBFOLDERS","SEGMENTATION_DEFAUT","SEGMENTATION_OPTIONS","appliquerReglages","MOMENTS_CONTACT","momentsContact","abfFraicheur","_todayCache","todayIso","todayEpoch","_minuitIso","lastNoteIso","daysBetween","addDays","COPIE_CONFLIT_CRM","COPIE_CONFLIT_RACINE","findAbfJsonHandle","ID_RACINE","CATEGORIE_ABF_RACINE","PROVENANCE_PAR_DEFAUT","estDossierClientDisque","RE_DOSSIER_MENAGE","estDossierMenageDisque","entreeIndexChemin","parseNotesRaw","splitNomDossier","fmtDate","prochainChangementAgeTarif","delaiLisible","texteChangementTarif","newGnId"];
 </script>
   <script>// Calendrier façon Google Agenda : la logique COMMUNE au CRM pour ordinateur et à la version
 // téléphone (mobile/). Ici, rien ne dessine : les deux écrans reçoivent les mêmes vues, les
