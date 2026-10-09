@@ -1355,6 +1355,49 @@ function fmtDate(iso){
   const [y,m,d] = iso.split('-').map(Number);
   return d + ' ' + MOIS_COURTS[m-1] + ' ' + y;
 }
+function prochainChangementAgeTarif(naissanceIso, todayStr){
+  if(!naissanceIso || !/^\d{4}-\d{2}-\d{2}$/.test(naissanceIso)) return null;
+  const [ny, nm, nd] = naissanceIso.split('-').map(Number);
+  const [ty, tm, td] = todayStr.split('-').map(Number);
+  const todayUTC = Date.UTC(ty, tm - 1, td);
+  for(let an = ty - 1; an <= ty + 1; an++){
+    // Le changement qui suit l'anniversaire de l'année `an`.
+    const mois0 = nm - 1 + 6;
+    const annee = an + Math.floor(mois0 / 12);
+    const mois = mois0 % 12;
+    const dernierJour = new Date(Date.UTC(annee, mois + 1, 0)).getUTCDate();
+    const jour = Math.min(nd, dernierJour);
+    const quand = Date.UTC(annee, mois, jour);
+    if(quand < todayUTC) continue;
+    const ageApres = an - ny + 1;
+    if(ageApres < 1 || ageApres > 130) return null;
+    return {
+      days: Math.round((quand - todayUTC) / 86400000),
+      iso: annee + '-' + String(mois + 1).padStart(2, '0') + '-' + String(jour).padStart(2, '0'),
+      ageAvant: ageApres - 1, ageApres
+    };
+  }
+  return null;
+}
+function delaiLisible(depuisIso, versIso){
+  const [y1, m1, d1] = depuisIso.split('-').map(Number), [y2, m2, d2] = versIso.split('-').map(Number);
+  const jours = Math.round((Date.UTC(y2, m2 - 1, d2) - Date.UTC(y1, m1 - 1, d1)) / 86400000);
+  if(jours <= 0) return 'aujourd’hui';
+  if(jours === 1) return 'demain';
+  let mois = (y2 - y1) * 12 + (m2 - m1);
+  if(d2 < d1) mois--;
+  if(mois < 1) return 'dans ' + jours + ' j';
+  const repere = new Date(Date.UTC(y1, m1 - 1 + mois, 1));
+  const dernier = new Date(Date.UTC(repere.getUTCFullYear(), repere.getUTCMonth() + 1, 0)).getUTCDate();
+  const reste = Math.round((Date.UTC(y2, m2 - 1, d2) - Date.UTC(repere.getUTCFullYear(), repere.getUTCMonth(), Math.min(d1, dernier))) / 86400000);
+  return 'dans ' + mois + ' mois' + (reste > 0 ? ' et ' + reste + ' j' : '');
+}
+function texteChangementTarif(naissanceIso, todayStr){
+  const auj = todayStr || todayIso();
+  const ch = prochainChangementAgeTarif(naissanceIso, auj);
+  if(!ch) return '';
+  return 'Tarifé à ' + ch.ageApres + ' ans dès le ' + fmtDate(ch.iso) + ' (' + delaiLisible(auj, ch.iso) + ')';
+}
 function newGnId(prefix){ return prefix + Date.now().toString(36) + Math.random().toString(36).slice(2,6); }
 var CRM_METHODES = {
   async scanRoot(rootHandle){
@@ -1672,7 +1715,7 @@ var CRM_METHODES = {
     return val;
   }
 };
-var CRM_COMMUN_NOMS = ["STAGES_DEFAUT","TYPES_ETAPE","TASK_CATEGORIES_DEFAUT","CATEGORIES_RENOMMEES","CATEGORIES_BASE_AJOUTEES","categorieTache","tacheCategorieAJour","STAGES_CONFIG","STAGES","TYPES_PAR_ETAPE","TASK_CATEGORIES","PIPELINE_AGING_DEFAUT","PIPELINE_AGING","OBJECTIF_HEBDO_DEFAUT","OBJECTIF_HEBDO","TASK_RECURRENCE","recurrenceOption","MODELES_TACHES_DEFAUT","MODELES_TACHES","scorePriorite","typeEtape","estGagnee","estFinale","SEQUENCES_DEFAUT","SEQUENCES_BASE_AJOUTEES","SEQUENCES_SUIVI","normaliserSequences","dateEtapeSequence","tacheEtapeSequence","tacheBasculee","occurrenceSuivante","sequenceAContinuer","etapeSuivanteSequence","tacheDeplacee","TYPES_GESTE_TELEPHONE","tacheDepuisTelephone","appliquerGesteTache","tacheAPartAgenda","tachesConformite","echeanceConformite","FUNNEL_STAGES","STAGES_GAGNEES","estNoShowEtape","estEtapeRdv","estTacheContact","notesIssues","leadDateReponse","pourcentage","heureCouranteHHMM","canalTache","CRENEAUX_CONTACT","JOURS_SEMAINE","jourSemaineIso","leadContacts","JOURNAL_IA_DOSSIER","AGENDA_TYPES_DEFAUT","AGENDA_SEMAINE_DEFAUT","AGENDA_DUREES_DEFAUT","AGENDA_DUREE_DEFAUT","AGENDA_MARGE_DEFAUT","AGENDA_GRILLE_DEFAUT","JOURS_COURTS","hhmmValide","minDe","hhmmDe","heureLisible","normaliserAgenda","lundiIso","semaineDuJour","typeAgenda","plagesDuJour","typeAccepte","dureeTacheAgenda","blocagesDuJour","soustraireSegment","BORNES_MOMENT","prefsAgendaClient","debutSelonPreferences","plagesAcceptant","repartirTachesSouples","planifierJournee","GRACE_TACHE_MANQUEE_MIN","majPrevuJournee","prochainJourAvecPlage","jourAvecPlageDes","ICONES_CATEGORIE","iconeCategorie","PRODUIT_TYPES","STATUTS_POTENTIEL","estPotentiel","TAUX_COMMISSION_DEFAUT","TAUX_COMMISSION","tauxCommission","policeIntacte","produitDepuisReco","chiffresReco","synchroniserPolicesAbf","MOIS_COURTS","DOSSIER_FICHES_ENTRANTES","DOSSIERS_TECHNIQUES","TACHES_SANS_DOSSIER_ID","TACHES_SANS_DOSSIER_NOM","SUBFOLDER_LABELS","FIXED_SUBFOLDERS","SEGMENTATION_DEFAUT","SEGMENTATION_OPTIONS","appliquerReglages","MOMENTS_CONTACT","momentsContact","abfFraicheur","_todayCache","todayIso","todayEpoch","_minuitIso","lastNoteIso","daysBetween","addDays","findAbfJsonHandle","ID_RACINE","CATEGORIE_ABF_RACINE","PROVENANCE_PAR_DEFAUT","estDossierClientDisque","RE_DOSSIER_MENAGE","estDossierMenageDisque","entreeIndexChemin","parseNotesRaw","splitNomDossier","fmtDate","newGnId"];
+var CRM_COMMUN_NOMS = ["STAGES_DEFAUT","TYPES_ETAPE","TASK_CATEGORIES_DEFAUT","CATEGORIES_RENOMMEES","CATEGORIES_BASE_AJOUTEES","categorieTache","tacheCategorieAJour","STAGES_CONFIG","STAGES","TYPES_PAR_ETAPE","TASK_CATEGORIES","PIPELINE_AGING_DEFAUT","PIPELINE_AGING","OBJECTIF_HEBDO_DEFAUT","OBJECTIF_HEBDO","TASK_RECURRENCE","recurrenceOption","MODELES_TACHES_DEFAUT","MODELES_TACHES","scorePriorite","typeEtape","estGagnee","estFinale","SEQUENCES_DEFAUT","SEQUENCES_BASE_AJOUTEES","SEQUENCES_SUIVI","normaliserSequences","dateEtapeSequence","tacheEtapeSequence","tacheBasculee","occurrenceSuivante","sequenceAContinuer","etapeSuivanteSequence","tacheDeplacee","TYPES_GESTE_TELEPHONE","tacheDepuisTelephone","appliquerGesteTache","tacheAPartAgenda","tachesConformite","echeanceConformite","FUNNEL_STAGES","STAGES_GAGNEES","estNoShowEtape","estEtapeRdv","estTacheContact","notesIssues","leadDateReponse","pourcentage","heureCouranteHHMM","canalTache","CRENEAUX_CONTACT","JOURS_SEMAINE","jourSemaineIso","leadContacts","JOURNAL_IA_DOSSIER","AGENDA_TYPES_DEFAUT","AGENDA_SEMAINE_DEFAUT","AGENDA_DUREES_DEFAUT","AGENDA_DUREE_DEFAUT","AGENDA_MARGE_DEFAUT","AGENDA_GRILLE_DEFAUT","JOURS_COURTS","hhmmValide","minDe","hhmmDe","heureLisible","normaliserAgenda","lundiIso","semaineDuJour","typeAgenda","plagesDuJour","typeAccepte","dureeTacheAgenda","blocagesDuJour","soustraireSegment","BORNES_MOMENT","prefsAgendaClient","debutSelonPreferences","plagesAcceptant","repartirTachesSouples","planifierJournee","GRACE_TACHE_MANQUEE_MIN","majPrevuJournee","prochainJourAvecPlage","jourAvecPlageDes","ICONES_CATEGORIE","iconeCategorie","PRODUIT_TYPES","STATUTS_POTENTIEL","estPotentiel","TAUX_COMMISSION_DEFAUT","TAUX_COMMISSION","tauxCommission","policeIntacte","produitDepuisReco","chiffresReco","synchroniserPolicesAbf","MOIS_COURTS","DOSSIER_FICHES_ENTRANTES","DOSSIERS_TECHNIQUES","TACHES_SANS_DOSSIER_ID","TACHES_SANS_DOSSIER_NOM","SUBFOLDER_LABELS","FIXED_SUBFOLDERS","SEGMENTATION_DEFAUT","SEGMENTATION_OPTIONS","appliquerReglages","MOMENTS_CONTACT","momentsContact","abfFraicheur","_todayCache","todayIso","todayEpoch","_minuitIso","lastNoteIso","daysBetween","addDays","findAbfJsonHandle","ID_RACINE","CATEGORIE_ABF_RACINE","PROVENANCE_PAR_DEFAUT","estDossierClientDisque","RE_DOSSIER_MENAGE","estDossierMenageDisque","entreeIndexChemin","parseNotesRaw","splitNomDossier","fmtDate","prochainChangementAgeTarif","delaiLisible","texteChangementTarif","newGnId"];
 </script>
   <script>// Calendrier façon Google Agenda : la logique COMMUNE au CRM pour ordinateur et à la version
 // téléphone (mobile/). Ici, rien ne dessine : les deux écrans reçoivent les mêmes vues, les
@@ -3335,6 +3378,7 @@ var CRM_COMMUN_NOMS = ["STAGES_DEFAUT","TYPES_ETAPE","TASK_CATEGORIES_DEFAUT","C
     h += '<div class="bloc"><h3>Identification</h3><div class="grille">'
       + champ('Prénom', n.prenom) + champ('Nom de famille', n.nom)
       + champ('Date de naissance', c.dateNaissance ? fmtDate(c.dateNaissance) + (ag != null ? ' (' + ag + ' ans)' : '') : '')
+      + champ('Changement de tarif', c.dateNaissance ? texteChangementTarif(c.dateNaissance) : '')
       + champ('Fumeur', c.fumeur) + champ('Sexe', c.sexe) + champ('État civil', c.etatCivil)
       + champ('Téléphone', tel) + champ('Courriel', courriel, true) + champ('Adresse', c.adresse, true)
       + champ('Emploi', [c.emploi, c.employeur].filter(Boolean).join(' · '), true)
