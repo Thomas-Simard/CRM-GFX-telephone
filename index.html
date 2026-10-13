@@ -102,6 +102,7 @@
   .ligne-produit{ display:block; width:100%; text-align:left; background:var(--surface, #fff); border:1px solid var(--trait, #e3e0d8); border-left:3px solid #C9A24B; border-radius:8px; padding:9px 11px; margin:0 0 8px; font:inherit; font-size:14px; color:inherit; cursor:pointer; }
   .ligne-produit .comm{ display:block; font-size:12.5px; color:var(--texte-3, #5b6472); margin-top:2px; }
   .resume-produits{ margin:0 0 10px; }
+  .nouveau-contact{ width:100%; margin:0 0 10px; }
   .grille{ display:grid; grid-template-columns:1fr 1fr; gap:10px 14px; }
   .champ .e{ font-size:10.5px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; color:var(--texte-3); }
   .champ .v{ font-size:14.5px; margin-top:2px; word-break:break-word; }
@@ -467,6 +468,31 @@ function tacheDeplacee(t, date, heure){
   return { ...reste, echeance: date, echeanceFin: date };
 }
 const TYPES_GESTE_TELEPHONE = ['creer', 'faite', 'deplacer', 'liberer', 'modifier', 'police-creer', 'police-modifier'];
+const PREFIXE_CONTACT_NOUVEAU = 'nouveau-';
+function contactDepuisGeste(x){
+  const t = (v, n) => String(v == null ? '' : v).replace(/\s+/g, ' ').trim().slice(0, n);
+  const c = x && typeof x === 'object' ? x : {};
+  const prenom = t(c.prenom, 60), nom = t(c.nom, 80), provenance = t(c.provenance, 80);
+  if(!nom) throw new Error('Nom de famille obligatoire');
+  if(!provenance) throw new Error('Provenance obligatoire (la « categorie » d’un client de clients.json, ou une nouvelle)');
+  const nomDossier = joinNomDossier(prenom, nom);
+  const pb = nomDossierInvalide(nomDossier) || nomDossierInvalide(provenance);
+  if(pb) throw new Error(pb);
+  const courriel = t(c.courriel, 200);
+  if(courriel && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(courriel)) throw new Error('Courriel invalide : ' + courriel);
+  const date = /^\d{4}-\d{2}-\d{2}(?:[ T]\d{1,2}:\d{2})?/.exec(String(c.dateCreation || '').trim());
+  return { prenom, nom, nomDossier, provenance, telephone: telFiche(t(c.telephone, 40)), courriel,
+    dateCreation: date ? date[0] : '', note: String(c.note || '').trim().slice(0, 4000), etape: t(c.etape, 60),
+    prochaineAction: t(c.prochaineAction, 300), idGhl: t(c.idGhl, 80) };
+}
+function contactDoublon(clients, contact){
+  const cle = (n) => normText(n).replace(/[^a-z0-9]/g, '');
+  const teln = (v) => String(v || '').replace(/\D/g, '').slice(-10);
+  const k = cle(contact.nomDossier), tel = teln(contact.telephone), mail = normText(contact.courriel || '');
+  return (clients || []).find(c => c && !String(c.id || '').startsWith(PREFIXE_CONTACT_NOUVEAU) && (cle(c.nom) === k
+    || (tel.length === 10 && teln(c.telephone) === tel)
+    || (!!mail && !!c.email && c.email !== '—' && normText(c.email) === mail))) || null;
+}
 function tacheDepuisTelephone(t){
   const iso = (d) => /^\d{4}-\d{2}-\d{2}$/.test(d || '') ? d : '';
   const texte = String((t && t.texte) || '').trim().slice(0, 300);
@@ -1246,6 +1272,17 @@ const DOSSIER_FICHES_ENTRANTES = '_Fiches entrantes';
 const DOSSIERS_TECHNIQUES = ['_sauvegardes', DOSSIER_FICHES_ENTRANTES, JOURNAL_IA_DOSSIER];
 const TACHES_SANS_DOSSIER_ID = '__sans_dossier__';
 const TACHES_SANS_DOSSIER_NOM = 'Sans dossier';
+const CARACTERES_INTERDITS = /[\\/:*?"<>|\r\n\t]/;
+function nomDossierInvalide(nom){
+  const t = String(nom == null ? '' : nom).trim();
+  if(!t) return 'Le nom ne peut pas être vide.';
+  if(CARACTERES_INTERDITS.test(t)) return 'Ces caractères sont interdits dans un nom de dossier : \\ / : * ? " < > |';
+  if(/^\.+$/.test(t)) return 'Ce nom n’est pas utilisable comme nom de dossier.';
+  if(/[. ]$/.test(t)) return 'Un nom de dossier ne peut pas se terminer par un point ou une espace.';
+  if(t.length > 120) return 'Ce nom est trop long (120 caractères maximum).';
+  if(DOSSIERS_TECHNIQUES.indexOf(t) !== -1) return '« ' + t + ' » est un nom réservé à l’outil.';
+  return '';
+}
 const SUBFOLDER_LABELS = ['Documents généraux','Assurances','Investissements','Conformité','Notes et suivis'];
 const FIXED_SUBFOLDERS = SUBFOLDER_LABELS.map((l,i) => (i+1) + ' - ' + l);
 const SEGMENTATION_DEFAUT = [
@@ -1339,6 +1376,9 @@ function momentsContact(c){
   const m = c && c.prefsContact && c.prefsContact.moments;
   return Array.isArray(m) ? MOMENTS_CONTACT.filter(x => m.indexOf(x) !== -1) : [];
 }
+function normText(s){
+  return (s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+}
 function abfFraicheur(trouvee, iso){
   if(!trouvee) return { cle:'manquante', label:'ABF manquante' };
   if(!iso || !/^\d{4}-\d{2}-\d{2}$/.test(iso)) return { cle:'inconnue', label:'ABF trouvée' };
@@ -1409,6 +1449,16 @@ function entreeIndexChemin(index, chemin){
   if(feuille !== chemin && Object.prototype.hasOwnProperty.call(index, feuille)) return index[feuille];
   return null;
 }
+function chiffresTel(s){
+  let d = String(s || '').replace(/\D/g, '');
+  if(d.length > 10 && d[0] === '1') d = d.slice(1);
+  return d;
+}
+function telFiche(s){
+  const d = chiffresTel(s);
+  if(d.length === 10) return '(' + d.slice(0,3) + ') ' + d.slice(3,6) + '-' + d.slice(6);
+  return String(s || '').trim();
+}
 function parseNotesRaw(raw){
   if(!raw || !raw.trim()) return [];
   // On ne coupe que sur une ligne vide SUIVIE d'un marqueur de date (« YYYY-MM-DD — ») :
@@ -1418,6 +1468,11 @@ function parseNotesRaw(raw){
     if(m) return { id:'nr'+i, date: m[1] ? fmtDate(m[1]) : '', texte: (m[2]||'').trim() };
     return { id:'nr'+i, date:'', texte: chunk.trim() };
   }).filter(n => n.texte);
+}
+function joinNomDossier(prenom, nom){
+  const p = (prenom || '').trim(), n = (nom || '').trim();
+  if(n && p) return n + ', ' + p;
+  return n || p;
 }
 function splitNomDossier(src){
   const s = (src || '').trim();
@@ -1795,7 +1850,7 @@ var CRM_METHODES = {
     return val;
   }
 };
-var CRM_COMMUN_NOMS = ["STAGES_DEFAUT","TYPES_ETAPE","TASK_CATEGORIES_DEFAUT","CATEGORIES_RENOMMEES","CATEGORIES_BASE_AJOUTEES","categorieTache","tacheCategorieAJour","STAGES_CONFIG","STAGES","TYPES_PAR_ETAPE","TASK_CATEGORIES","PIPELINE_AGING_DEFAUT","PIPELINE_AGING","OBJECTIF_HEBDO_DEFAUT","OBJECTIF_HEBDO","TASK_RECURRENCE","recurrenceOption","MODELES_TACHES_DEFAUT","MODELES_TACHES","scorePriorite","typeEtape","estGagnee","estFinale","SEQUENCES_DEFAUT","SEQUENCES_BASE_AJOUTEES","SEQUENCES_SUIVI","normaliserSequences","dateEtapeSequence","tacheEtapeSequence","tacheBasculee","occurrenceSuivante","sequenceAContinuer","etapeSuivanteSequence","tacheDeplacee","TYPES_GESTE_TELEPHONE","tacheDepuisTelephone","policeDepuisGeste","appliquerGesteTache","tacheAPartAgenda","tachesConformite","echeanceConformite","FUNNEL_STAGES","STAGES_GAGNEES","estNoShowEtape","estEtapeRdv","estTacheContact","RESULTATS_TACHE","libelleResultatTache","notesIssues","leadDateReponse","pourcentage","heureCouranteHHMM","canalTache","CRENEAUX_CONTACT","JOURS_SEMAINE","jourSemaineIso","leadContacts","JOURNAL_IA_DOSSIER","AGENDA_TYPES_DEFAUT","AGENDA_SEMAINE_DEFAUT","AGENDA_DUREES_DEFAUT","AGENDA_DUREE_DEFAUT","AGENDA_MARGE_DEFAUT","AGENDA_GRILLE_DEFAUT","JOURS_COURTS","hhmmValide","minDe","hhmmDe","heureLisible","normaliserAgenda","lundiIso","semaineDuJour","typeAgenda","plagesDuJour","typeAccepte","dureeTacheAgenda","blocagesDuJour","soustraireSegment","BORNES_MOMENT","prefsAgendaClient","debutSelonPreferences","plagesAcceptant","repartirTachesSouples","planifierJournee","GRACE_TACHE_MANQUEE_MIN","majPrevuJournee","prochainJourAvecPlage","jourAvecPlageDes","policeLisible","resumeProduits","ICONES_CATEGORIE","iconeCategorie","PRODUIT_TYPES","TARIFICATION_STATUTS","STATUTS_POTENTIEL","estPotentiel","TAUX_COMMISSION_DEFAUT","TAUX_COMMISSION","tauxCommission","commissionEstimee","primeMensuellePolice","policeIntacte","produitDepuisReco","chiffresReco","synchroniserPolicesAbf","MOIS_COURTS","DOSSIER_FICHES_ENTRANTES","DOSSIERS_TECHNIQUES","TACHES_SANS_DOSSIER_ID","TACHES_SANS_DOSSIER_NOM","SUBFOLDER_LABELS","FIXED_SUBFOLDERS","SEGMENTATION_DEFAUT","SEGMENTATION_OPTIONS","appliquerReglages","MOMENTS_CONTACT","momentsContact","abfFraicheur","_todayCache","todayIso","todayEpoch","_minuitIso","lastNoteIso","daysBetween","addDays","COPIE_CONFLIT_CRM","COPIE_CONFLIT_RACINE","findAbfJsonHandle","ID_RACINE","CATEGORIE_ABF_RACINE","PROVENANCE_PAR_DEFAUT","estDossierClientDisque","RE_DOSSIER_MENAGE","estDossierMenageDisque","entreeIndexChemin","parseNotesRaw","splitNomDossier","fmtDate","prochainChangementAgeTarif","delaiLisible","texteChangementTarif","newGnId"];
+var CRM_COMMUN_NOMS = ["STAGES_DEFAUT","TYPES_ETAPE","TASK_CATEGORIES_DEFAUT","CATEGORIES_RENOMMEES","CATEGORIES_BASE_AJOUTEES","categorieTache","tacheCategorieAJour","STAGES_CONFIG","STAGES","TYPES_PAR_ETAPE","TASK_CATEGORIES","PIPELINE_AGING_DEFAUT","PIPELINE_AGING","OBJECTIF_HEBDO_DEFAUT","OBJECTIF_HEBDO","TASK_RECURRENCE","recurrenceOption","MODELES_TACHES_DEFAUT","MODELES_TACHES","scorePriorite","typeEtape","estGagnee","estFinale","SEQUENCES_DEFAUT","SEQUENCES_BASE_AJOUTEES","SEQUENCES_SUIVI","normaliserSequences","dateEtapeSequence","tacheEtapeSequence","tacheBasculee","occurrenceSuivante","sequenceAContinuer","etapeSuivanteSequence","tacheDeplacee","TYPES_GESTE_TELEPHONE","PREFIXE_CONTACT_NOUVEAU","contactDepuisGeste","contactDoublon","tacheDepuisTelephone","policeDepuisGeste","appliquerGesteTache","tacheAPartAgenda","tachesConformite","echeanceConformite","FUNNEL_STAGES","STAGES_GAGNEES","estNoShowEtape","estEtapeRdv","estTacheContact","RESULTATS_TACHE","libelleResultatTache","notesIssues","leadDateReponse","pourcentage","heureCouranteHHMM","canalTache","CRENEAUX_CONTACT","JOURS_SEMAINE","jourSemaineIso","leadContacts","JOURNAL_IA_DOSSIER","AGENDA_TYPES_DEFAUT","AGENDA_SEMAINE_DEFAUT","AGENDA_DUREES_DEFAUT","AGENDA_DUREE_DEFAUT","AGENDA_MARGE_DEFAUT","AGENDA_GRILLE_DEFAUT","JOURS_COURTS","hhmmValide","minDe","hhmmDe","heureLisible","normaliserAgenda","lundiIso","semaineDuJour","typeAgenda","plagesDuJour","typeAccepte","dureeTacheAgenda","blocagesDuJour","soustraireSegment","BORNES_MOMENT","prefsAgendaClient","debutSelonPreferences","plagesAcceptant","repartirTachesSouples","planifierJournee","GRACE_TACHE_MANQUEE_MIN","majPrevuJournee","prochainJourAvecPlage","jourAvecPlageDes","policeLisible","resumeProduits","ICONES_CATEGORIE","iconeCategorie","PRODUIT_TYPES","TARIFICATION_STATUTS","STATUTS_POTENTIEL","estPotentiel","TAUX_COMMISSION_DEFAUT","TAUX_COMMISSION","tauxCommission","commissionEstimee","primeMensuellePolice","policeIntacte","produitDepuisReco","chiffresReco","synchroniserPolicesAbf","MOIS_COURTS","DOSSIER_FICHES_ENTRANTES","DOSSIERS_TECHNIQUES","TACHES_SANS_DOSSIER_ID","TACHES_SANS_DOSSIER_NOM","CARACTERES_INTERDITS","nomDossierInvalide","SUBFOLDER_LABELS","FIXED_SUBFOLDERS","SEGMENTATION_DEFAUT","SEGMENTATION_OPTIONS","appliquerReglages","MOMENTS_CONTACT","momentsContact","normText","abfFraicheur","_todayCache","todayIso","todayEpoch","_minuitIso","lastNoteIso","daysBetween","addDays","COPIE_CONFLIT_CRM","COPIE_CONFLIT_RACINE","findAbfJsonHandle","ID_RACINE","CATEGORIE_ABF_RACINE","PROVENANCE_PAR_DEFAUT","estDossierClientDisque","RE_DOSSIER_MENAGE","estDossierMenageDisque","entreeIndexChemin","chiffresTel","telFiche","parseNotesRaw","joinNomDossier","splitNomDossier","fmtDate","prochainChangementAgeTarif","delaiLisible","texteChangementTarif","newGnId"];
 </script>
   <script>// Calendrier façon Google Agenda : la logique COMMUNE au CRM pour ordinateur et à la version
 // téléphone (mobile/). Ici, rien ne dessine : les deux écrans reçoivent les mêmes vues, les
@@ -3032,6 +3087,8 @@ var CRM_COMMUN_NOMS = ["STAGES_DEFAUT","TYPES_ETAPE","TASK_CATEGORIES_DEFAUT","C
   let gestes = [], texteGestes = '';
   const nouvelIdGeste = () => 'g' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
   function opDepuis(nom, args){
+    // Nouveau contact (13 oct. 2026) : un dossier que l'ordinateur créera.
+    if(nom === 'contact-creer') return { id: nouvelIdGeste(), at: new Date().toISOString(), type: 'contact-creer', contact: contactDepuisGeste(args[0]), sequence: !!args[1] };
     const op = { id: nouvelIdGeste(), clientId: args[0], at: new Date().toISOString() };
     if(nom === 'creer') return { ...op, type: 'creer', tache: args[1] };
     if(nom === 'deplacer') return { ...op, type: 'deplacer', taskId: args[1], date: args[2], heure: args[3] || '' };
@@ -3048,6 +3105,18 @@ var CRM_COMMUN_NOMS = ["STAGES_DEFAUT","TYPES_ETAPE","TASK_CATEGORIES_DEFAUT","C
   }
   // Applique un geste à l'agenda du téléphone (mêmes règles que l'ordinateur).
   function appliquerIci(op){
+    // Le contact paraît tout de suite, « en attente de l'ordinateur », jusqu'à son prochain envoi.
+    if(op.type === 'contact-creer'){
+      const c = contactDepuisGeste(op.contact), id = PREFIXE_CONTACT_NOUVEAU + op.id;
+      if((m.state.clients || []).some(x => x.id === id)) return null;
+      const doublon = contactDoublon(m.state.clients, c);
+      if(doublon) throw new Error('Déjà au dossier : ' + doublon.nom);
+      const provisoire = { id, nom: c.nomDossier, categorie: c.provenance, telephone: c.telephone || '—', email: c.courriel || '—', etape: c.etape || 'Prospect',
+        tasks: [], polices: [], appels: [], historique: [], notesRaw: c.note ? todayIso() + ' — ' + c.note : '', prochaineAction: c.prochaineAction || '', enAttenteOrdinateur: true };
+      m.state = { ...m.state, clients: [...(m.state.clients || []), provisoire] };
+      m._memoStore = {};
+      return { message: 'Contact « ' + c.nomDossier + ' » créé' + (op.sequence ? ' (séquence « Nouveau Leads » sur l’ordinateur)' : '') };
+    }
     const sans = op.clientId === TACHES_SANS_DOSSIER_ID;
     const c = sans ? null : (m.state.clients || []).find(x => x.id === op.clientId);
     if(!sans && !c) throw new Error('Dossier introuvable sur le téléphone.');
@@ -3129,8 +3198,8 @@ var CRM_COMMUN_NOMS = ["STAGES_DEFAUT","TYPES_ETAPE","TASK_CATEGORIES_DEFAUT","C
   async function geste(nom, ...args){
     if(app.source === 'publication') return gesteTelephone(nom, ...args);
     // Les produits ne se modifient qu'avec l'envoi de l'ordinateur (et en démo, sur le téléphone seulement).
-    if(/^police-/.test(nom)){
-      if(app.source !== 'demo'){ annoncer('Les produits se modifient avec l’envoi de l’ordinateur.'); return null; }
+    if(/^police-|^contact-/.test(nom)){
+      if(app.source !== 'demo'){ annoncer(/^contact-/.test(nom) ? 'Les contacts se créent avec l’envoi de l’ordinateur.' : 'Les produits se modifient avec l’envoi de l’ordinateur.'); return null; }
       try{ const r = appliquerIci(opDepuis(nom, args)); app.feuille = null; annoncer(r ? r.message + ' (démo)' : 'Rien à changer'); return r; }
       catch(e){ app.erreur = e && e.message ? e.message : String(e); return null; }
       finally{ rendre(); }
@@ -3410,6 +3479,18 @@ var CRM_COMMUN_NOMS = ["STAGES_DEFAUT","TYPES_ETAPE","TASK_CATEGORIES_DEFAUT","C
         + '</div>';
     } else if(f.type === 'police'){
       h = feuillePolice(f);
+    } else if(f.type === 'contact'){
+      const provs = [...new Set((m.state.clients || []).filter(c => c && !c.archive && c.categorie).map(c => c.categorie))].sort((a, b) => a.localeCompare(b, 'fr'));
+      h = '<h3>Nouveau contact</h3>'
+        + '<div class="f-rang"><label>Prénom<input class="champ-saisie" id="f-c-prenom" autocomplete="off"></label><label>Nom de famille<input class="champ-saisie" id="f-c-nom" autocomplete="off"></label></div>'
+        + '<div class="f-rang"><label>Téléphone<input class="champ-saisie" id="f-c-tel" inputmode="tel" autocomplete="off"></label><label>Courriel<input class="champ-saisie" id="f-c-courriel" inputmode="email" autocomplete="off"></label></div>'
+        + '<label>Provenance<select class="champ-saisie" id="f-c-prov"><option value="">— choisir —</option>' + provs.map(p => '<option value="' + esc(p) + '">' + esc(p) + '</option>').join('')
+        + '<option value="__autre">Autre…</option></select></label>'
+        + '<label id="f-c-prov-autre-l" hidden>Nouvelle provenance<input class="champ-saisie" id="f-c-prov-autre" autocomplete="off"></label>'
+        + '<label>Note (facultatif)<textarea class="champ-saisie" id="f-c-note" rows="3" placeholder="Ce que le lead a répondu, ce qu’il cherche…"></textarea></label>'
+        + '<label class="f-case"><input type="checkbox" id="f-c-seq" checked> Démarrer la séquence « Nouveau Leads » (1re tâche aujourd’hui)</label>'
+        + '<p class="note">L’ordinateur crée le dossier OneDrive à sa prochaine minute (CRM ouvert). Un nom, un téléphone ou un courriel déjà au dossier est refusé.</p>'
+        + '<div class="f-actions"><button class="bouton" data-action="enregistrer-contact">Créer le contact</button><button class="bouton second" data-action="fermer-feuille">Annuler</button></div>';
     } else if(f.type === 'resultat'){
       h = '<h3>Résultat</h3><p class="note">' + esc(f.texte || '') + '</p>'
         + '<div class="f-actions colonne"><button class="bouton" data-action="resultat" data-resultat="repondu">Répondu</button>'
@@ -3472,12 +3553,13 @@ var CRM_COMMUN_NOMS = ["STAGES_DEFAUT","TYPES_ETAPE","TASK_CATEGORIES_DEFAUT","C
     const l = M.chercherClients(m, app.recherche);
     if(!l.length) return '<div class="vide">Aucun client ne correspond.</div>';
     return l.slice(0, 300).map(c => '<button class="client" data-action="fiche" data-id="' + esc(c.id) + '"><span><div class="nom">' + esc(c.nom) + '</div><div class="sous">'
-      + esc([c.categorie, c.etape, valeur(c.telephone)].filter(Boolean).join(' · ')) + '</div></span><span class="fl">›</span></button>').join('')
+      + esc([c.categorie, c.etape, valeur(c.telephone), c.enAttenteOrdinateur ? '⏳ en attente de l’ordinateur' : ''].filter(Boolean).join(' · ')) + '</div></span><span class="fl">›</span></button>').join('')
       + (l.length > 300 ? '<p class="note">' + (l.length - 300) + ' autres : précise la recherche.</p>' : '');
   }
   function ecranClients(){
     if(app.fiche) return ecranFiche();
-    return '<input class="recherche" id="recherche" type="search" placeholder="Rechercher un nom, un téléphone, un courriel" value="' + esc(app.recherche) + '" autocomplete="off" aria-label="Rechercher un client">'
+    return (peutEcrire() ? '<button class="bouton nouveau-contact" data-action="contact-nouveau">+ Nouveau contact</button>' : '')
+      + '<input class="recherche" id="recherche" type="search" placeholder="Rechercher un nom, un téléphone, un courriel" value="' + esc(app.recherche) + '" autocomplete="off" aria-label="Rechercher un client">'
       + (() => { const r = resumeProduits([].concat(...(m.state.clients || []).filter(c => c && !c.archive).map(c => c.polices || [])));
           const t = texteResume(r); return t ? '<p class="note resume-produits">💼 Produits : ' + esc(t) + '</p>' : ''; })()
       + '<div id="liste-clients">' + listeClients() + '</div>';
@@ -3713,6 +3795,18 @@ var CRM_COMMUN_NOMS = ["STAGES_DEFAUT","TYPES_ETAPE","TASK_CATEGORIES_DEFAUT","C
       const clientId = el.dataset.client, taskId = el.dataset.tache;
       app.feuille = null; cocher(clientId, taskId, el.dataset.fait === '1'); return;
     }
+    else if(a === 'contact-nouveau'){ app.feuille = { type: 'contact' }; }
+    else if(a === 'enregistrer-contact'){
+      const prov = valeurDe('f-c-prov') === '__autre' ? valeurDe('f-c-prov-autre') : valeurDe('f-c-prov');
+      const contact = { prenom: valeurDe('f-c-prenom'), nom: valeurDe('f-c-nom'), telephone: valeurDe('f-c-tel'), courriel: valeurDe('f-c-courriel'), provenance: prov, note: valeurDe('f-c-note') };
+      try{
+        const c = contactDepuisGeste(contact);
+        const doublon = contactDoublon(m.state.clients, c);
+        if(doublon){ app.erreur = 'Déjà au dossier : ' + doublon.nom; rendre(); return; }
+      }catch(e){ app.erreur = e.message; rendre(); return; }
+      app.erreur = '';
+      geste('contact-creer', contact, !!($('f-c-seq') || {}).checked); return;
+    }
     else if(a === 'resultat'){ const f = app.feuille; continuerCocher(f.clientId, f.taskId, false, el.dataset.resultat || '', el.dataset.rdv === '1'); return; }
     else if(a === 'suite'){ const f = app.feuille; const res = f.resultat || (el.dataset.suite === 'repondu' ? 'repondu' : ''); geste('cocher', f.clientId, f.taskId, el.dataset.suite, res, !!f.rdv); return; }
     else if(a === 'deplacer'){
@@ -3817,6 +3911,7 @@ var CRM_COMMUN_NOMS = ["STAGES_DEFAUT","TYPES_ETAPE","TASK_CATEGORIES_DEFAUT","C
       if(s) s.innerHTML = q.length < 2 ? '' : M.chercherClients(m, q).slice(0, 6).map(c => '<button type="button" class="bouton second" data-action="choisir-contact" data-nom="' + esc(c.nom) + '" style="display:block;width:100%;text-align:left;margin:4px 0;">👤 ' + esc(c.nom) + (valeur(c.telephone) ? ' <small style="opacity:.7">· ' + esc(valeur(c.telephone)) + '</small>' : '') + '</button>').join('');
       return;
     }
+    if(ev.target.id === 'f-c-prov'){ const l = $('f-c-prov-autre-l'); if(l) l.hidden = ev.target.value !== '__autre'; }
     if(ev.target.id === 'recherche'){ app.recherche = ev.target.value; const l = $('liste-clients'); if(l) l.innerHTML = listeClients(); }
   });
   document.addEventListener('change', (ev) => {
