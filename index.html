@@ -1630,7 +1630,8 @@ var CRM_METHODES = {
     }
     const copiesConflit = [];
     try{ for await (const [nom, e] of dirHandle.entries()) if(e && e.kind === 'file' && COPIE_CONFLIT_CRM.test(nom)) copiesConflit.push(nom); }catch(e){}
-    const subEntries = await Promise.all(SUBFOLDER_LABELS.map((label,i) => this.listSubfolder(dirHandle, FIXED_SUBFOLDERS[i], label)));
+    const sousDossiers = {};
+    const subEntries = await Promise.all(SUBFOLDER_LABELS.map((label,i) => this.listSubfolder(dirHandle, FIXED_SUBFOLDERS[i], label, (sousDossiers[label] = []))));
     const subfolders = {};
     SUBFOLDER_LABELS.forEach((label,i) => subfolders[label] = subEntries[i]);
     let notesRaw = '';
@@ -1773,7 +1774,7 @@ var CRM_METHODES = {
       docsSignes: (crm.docsSignes && typeof crm.docsSignes === 'object') ? crm.docsSignes : {},
       _crmRaw: crmRaw,
       conjointPartenaireNom,
-      subfolders
+      subfolders, sousDossiers
     };
   },
   async readJson(dirHandle, name){
