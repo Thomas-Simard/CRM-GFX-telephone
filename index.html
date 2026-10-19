@@ -1442,6 +1442,17 @@ async function estDossierMenageDisque(handle){
   }catch(e){}
   return false;
 }
+const MAX_DOSSIERS_MENAGE = 2;
+async function nbDossiersClientsDans(handle, max){
+  let n = 0;
+  try{
+    for await (const [nom, enfant] of handle.entries()){
+      if(enfant.kind !== 'directory' || nom.startsWith('.') || nom.startsWith('_')) continue;
+      if(await estDossierClientDisque(enfant) && ++n > max) return n;
+    }
+  }catch(e){}
+  return n;
+}
 function entreeIndexChemin(index, chemin){
   if(!index) return null;
   if(Object.prototype.hasOwnProperty.call(index, chemin)) return index[chemin];
@@ -1555,7 +1566,7 @@ var CRM_METHODES = {
       }
       // Dossier MÉNAGE posé directement à la racine (structure plate) : ses deux conjoints
       // sont des dossiers clients de la racine, pas d'une provenance nommée d'après le couple.
-      if(await estDossierMenageDisque(groupEntry)){
+      if(await estDossierMenageDisque(groupEntry) && await nbDossiersClientsDans(groupEntry, MAX_DOSSIERS_MENAGE) <= MAX_DOSSIERS_MENAGE){
         try{
           for await (const [nomConjoint, conjointEntry] of groupEntry.entries()){
             if(conjointEntry.kind !== 'directory') continue;
@@ -1576,10 +1587,11 @@ var CRM_METHODES = {
           // « Beaulieu, Émile (Isabelle Gagnon) », vide, et les deux vraies fiches
           // n'existeraient nulle part dans le CRM.
           if(!(await estDossierClientDisque(clientEntry)) && await estDossierMenageDisque(clientEntry)){
+            const regroupement = await nbDossiersClientsDans(clientEntry, MAX_DOSSIERS_MENAGE) > MAX_DOSSIERS_MENAGE;
             for await (const [nomConjoint, conjointEntry] of clientEntry.entries()){
               if(conjointEntry.kind !== 'directory') continue;
               if(nomConjoint.startsWith('.') || nomConjoint.startsWith('_')) continue;
-              clients.push(await this.buildClient(conjointEntry, provenance, entreeIndexChemin(index, clientName + '/' + nomConjoint), groupEntry, clientName));
+              clients.push(await this.buildClient(conjointEntry, provenance, entreeIndexChemin(index, clientName + '/' + nomConjoint), groupEntry, clientName, regroupement ? { regroupement: true } : null));
             }
             continue;
           }
@@ -1600,7 +1612,7 @@ var CRM_METHODES = {
     this._sante = { ...(this._sante || {}), lecture: { ms: Date.now() - debutLecture, nb: clients.length, quand: Date.now() }, conflitsRacine };
     return clients;
   },
-  async buildClient(dirHandle, provenance, indexEntry, groupHandle, menageNom){
+  async buildClient(dirHandle, provenance, indexEntry, groupHandle, menageNom, opts){
     // On garde le texte brut de _crm.json tel qu'il était sur le disque : c'est la référence
     // qui permet de détecter un conflit avant d'écraser (cf. writeCrmData).
     let crmRaw = null;
@@ -1750,7 +1762,15 @@ var CRM_METHODES = {
       // L'ABF écrit `menage` dans `_crm.json` au moment de créer le couple. Le nom du dossier
       // ménage sert de filet : un couple reste groupé dans l'onglet Ménages même si le
       // fichier n'a pas encore été mis à jour.
-      menage: crm.menage || menageFolderName || '',
+      // Étiquette « ménage » : jamais celle d'un dossier de regroupement (plus de 2 dossiers)
+      // ni le nom de la provenance — restes de l'ancienne détection, ignorés puis effacés au
+      // prochain enregistrement (Thomas, 19 oct. 2026).
+      menage: (() => {
+        const regroupement = !!(opts && opts.regroupement);
+        const faux = (m) => !m || (regroupement && m === menageFolderName) || (!menageFolderName && groupHandle && m === groupHandle.name);
+        return (!faux(crm.menage) ? crm.menage : '') || (regroupement ? '' : menageFolderName) || '';
+      })(),
+      regroupement: !!(opts && opts.regroupement),
       liens: Array.isArray(crm.liens) ? crm.liens : [],
       champsPerso: (crm.champsPerso && typeof crm.champsPerso === 'object') ? crm.champsPerso : {},
       // Communication : journal d'appels, préférences de contact, documents signés.
@@ -1851,7 +1871,7 @@ var CRM_METHODES = {
     return val;
   }
 };
-var CRM_COMMUN_NOMS = ["STAGES_DEFAUT","TYPES_ETAPE","TASK_CATEGORIES_DEFAUT","CATEGORIES_RENOMMEES","CATEGORIES_BASE_AJOUTEES","categorieTache","tacheCategorieAJour","STAGES_CONFIG","STAGES","TYPES_PAR_ETAPE","TASK_CATEGORIES","PIPELINE_AGING_DEFAUT","PIPELINE_AGING","OBJECTIF_HEBDO_DEFAUT","OBJECTIF_HEBDO","TASK_RECURRENCE","recurrenceOption","MODELES_TACHES_DEFAUT","MODELES_TACHES","scorePriorite","typeEtape","estGagnee","estFinale","SEQUENCES_DEFAUT","SEQUENCES_BASE_AJOUTEES","SEQUENCES_SUIVI","normaliserSequences","dateEtapeSequence","tacheEtapeSequence","tacheBasculee","occurrenceSuivante","sequenceAContinuer","etapeSuivanteSequence","tacheDeplacee","TYPES_GESTE_TELEPHONE","PREFIXE_CONTACT_NOUVEAU","contactDepuisGeste","contactDoublon","tacheDepuisTelephone","policeDepuisGeste","appliquerGesteTache","tacheAPartAgenda","tachesConformite","echeanceConformite","FUNNEL_STAGES","STAGES_GAGNEES","estNoShowEtape","estEtapeRdv","estTacheContact","RESULTATS_TACHE","libelleResultatTache","notesIssues","leadDateReponse","pourcentage","heureCouranteHHMM","canalTache","CRENEAUX_CONTACT","JOURS_SEMAINE","jourSemaineIso","leadContacts","JOURNAL_IA_DOSSIER","AGENDA_TYPES_DEFAUT","AGENDA_SEMAINE_DEFAUT","AGENDA_DUREES_DEFAUT","AGENDA_DUREE_DEFAUT","AGENDA_MARGE_DEFAUT","AGENDA_GRILLE_DEFAUT","JOURS_COURTS","hhmmValide","minDe","hhmmDe","heureLisible","normaliserAgenda","lundiIso","semaineDuJour","typeAgenda","plagesDuJour","typeAccepte","dureeTacheAgenda","blocagesDuJour","soustraireSegment","BORNES_MOMENT","prefsAgendaClient","debutSelonPreferences","plagesAcceptant","repartirTachesSouples","planifierJournee","GRACE_TACHE_MANQUEE_MIN","majPrevuJournee","prochainJourAvecPlage","jourAvecPlageDes","policeLisible","resumeProduits","ICONES_CATEGORIE","iconeCategorie","PRODUIT_TYPES","TARIFICATION_STATUTS","STATUTS_POTENTIEL","estPotentiel","TAUX_COMMISSION_DEFAUT","TAUX_COMMISSION","tauxCommission","commissionEstimee","primeMensuellePolice","policeIntacte","produitDepuisReco","chiffresReco","synchroniserPolicesAbf","MOIS_COURTS","DOSSIER_FICHES_ENTRANTES","DOSSIERS_TECHNIQUES","TACHES_SANS_DOSSIER_ID","TACHES_SANS_DOSSIER_NOM","CARACTERES_INTERDITS","nomDossierInvalide","SUBFOLDER_LABELS","FIXED_SUBFOLDERS","SEGMENTATION_DEFAUT","SEGMENTATION_OPTIONS","appliquerReglages","MOMENTS_CONTACT","momentsContact","normText","abfFraicheur","_todayCache","todayIso","todayEpoch","_minuitIso","lastNoteIso","daysBetween","addDays","COPIE_CONFLIT_CRM","COPIE_CONFLIT_RACINE","findAbfJsonHandle","ID_RACINE","CATEGORIE_ABF_RACINE","PROVENANCE_PAR_DEFAUT","estDossierClientDisque","RE_DOSSIER_MENAGE","estDossierMenageDisque","entreeIndexChemin","chiffresTel","telFiche","parseNotesRaw","joinNomDossier","splitNomDossier","fmtDate","prochainChangementAgeTarif","delaiLisible","texteChangementTarif","newGnId"];
+var CRM_COMMUN_NOMS = ["STAGES_DEFAUT","TYPES_ETAPE","TASK_CATEGORIES_DEFAUT","CATEGORIES_RENOMMEES","CATEGORIES_BASE_AJOUTEES","categorieTache","tacheCategorieAJour","STAGES_CONFIG","STAGES","TYPES_PAR_ETAPE","TASK_CATEGORIES","PIPELINE_AGING_DEFAUT","PIPELINE_AGING","OBJECTIF_HEBDO_DEFAUT","OBJECTIF_HEBDO","TASK_RECURRENCE","recurrenceOption","MODELES_TACHES_DEFAUT","MODELES_TACHES","scorePriorite","typeEtape","estGagnee","estFinale","SEQUENCES_DEFAUT","SEQUENCES_BASE_AJOUTEES","SEQUENCES_SUIVI","normaliserSequences","dateEtapeSequence","tacheEtapeSequence","tacheBasculee","occurrenceSuivante","sequenceAContinuer","etapeSuivanteSequence","tacheDeplacee","TYPES_GESTE_TELEPHONE","PREFIXE_CONTACT_NOUVEAU","contactDepuisGeste","contactDoublon","tacheDepuisTelephone","policeDepuisGeste","appliquerGesteTache","tacheAPartAgenda","tachesConformite","echeanceConformite","FUNNEL_STAGES","STAGES_GAGNEES","estNoShowEtape","estEtapeRdv","estTacheContact","RESULTATS_TACHE","libelleResultatTache","notesIssues","leadDateReponse","pourcentage","heureCouranteHHMM","canalTache","CRENEAUX_CONTACT","JOURS_SEMAINE","jourSemaineIso","leadContacts","JOURNAL_IA_DOSSIER","AGENDA_TYPES_DEFAUT","AGENDA_SEMAINE_DEFAUT","AGENDA_DUREES_DEFAUT","AGENDA_DUREE_DEFAUT","AGENDA_MARGE_DEFAUT","AGENDA_GRILLE_DEFAUT","JOURS_COURTS","hhmmValide","minDe","hhmmDe","heureLisible","normaliserAgenda","lundiIso","semaineDuJour","typeAgenda","plagesDuJour","typeAccepte","dureeTacheAgenda","blocagesDuJour","soustraireSegment","BORNES_MOMENT","prefsAgendaClient","debutSelonPreferences","plagesAcceptant","repartirTachesSouples","planifierJournee","GRACE_TACHE_MANQUEE_MIN","majPrevuJournee","prochainJourAvecPlage","jourAvecPlageDes","policeLisible","resumeProduits","ICONES_CATEGORIE","iconeCategorie","PRODUIT_TYPES","TARIFICATION_STATUTS","STATUTS_POTENTIEL","estPotentiel","TAUX_COMMISSION_DEFAUT","TAUX_COMMISSION","tauxCommission","commissionEstimee","primeMensuellePolice","policeIntacte","produitDepuisReco","chiffresReco","synchroniserPolicesAbf","MOIS_COURTS","DOSSIER_FICHES_ENTRANTES","DOSSIERS_TECHNIQUES","TACHES_SANS_DOSSIER_ID","TACHES_SANS_DOSSIER_NOM","CARACTERES_INTERDITS","nomDossierInvalide","SUBFOLDER_LABELS","FIXED_SUBFOLDERS","SEGMENTATION_DEFAUT","SEGMENTATION_OPTIONS","appliquerReglages","MOMENTS_CONTACT","momentsContact","normText","abfFraicheur","_todayCache","todayIso","todayEpoch","_minuitIso","lastNoteIso","daysBetween","addDays","COPIE_CONFLIT_CRM","COPIE_CONFLIT_RACINE","findAbfJsonHandle","ID_RACINE","CATEGORIE_ABF_RACINE","PROVENANCE_PAR_DEFAUT","estDossierClientDisque","RE_DOSSIER_MENAGE","estDossierMenageDisque","MAX_DOSSIERS_MENAGE","nbDossiersClientsDans","entreeIndexChemin","chiffresTel","telFiche","parseNotesRaw","joinNomDossier","splitNomDossier","fmtDate","prochainChangementAgeTarif","delaiLisible","texteChangementTarif","newGnId"];
 </script>
   <script>// Calendrier façon Google Agenda : la logique COMMUNE au CRM pour ordinateur et à la version
 // téléphone (mobile/). Ici, rien ne dessine : les deux écrans reçoivent les mêmes vues, les
