@@ -709,6 +709,7 @@ const AGENDA_DUREES_DEFAUT = { 'Appel': 15, 'Message texte': 5, 'Courriel': 10, 
 const AGENDA_DUREE_DEFAUT = 15;
 const AGENDA_MARGE_DEFAUT = 10;       // % de chaque plage gardé libre pour l'imprévu
 const AGENDA_GRILLE_DEFAUT = { debut: '08:00', fin: '19:00' };
+const AGENDA_DEBUT_SOIR_DEFAUT = '16:00'; // réglable dans Réglages › Agenda (Thomas, 28 oct. 2026)
 const JOURS_COURTS = ['Dim.', 'Lun.', 'Mar.', 'Mer.', 'Jeu.', 'Ven.', 'Sam.'];
 function hhmmValide(h){ return /^([01]\d|2[0-3]):[0-5]\d$/.test(h || '') ? h : ''; }
 function minDe(h){ return h ? Number(h.slice(0, 2)) * 60 + Number(h.slice(3, 5)) : 0; }
@@ -761,7 +762,8 @@ function normaliserAgenda(brut){
     prepRdv: o.prepRdv !== false,                      // bloc de préparation réservé avant chaque rendez-vous
     prepMinutes: Math.max(5, Math.min(180, Math.round(Number(o.prepMinutes)) || 30)),
     leadsChauds: o.leadsChauds !== false,              // lead de moins de 24 h : premier créneau libre, toute plage
-    anniversaires: o.anniversaires !== false           // « bon anniversaire » placé dans la plage qui accepte les suivis
+    anniversaires: o.anniversaires !== false,          // « bon anniversaire » placé dans la plage qui accepte les suivis
+    debutSoir: hhmmValide(o.debutSoir) || AGENDA_DEBUT_SOIR_DEFAUT // client « soir seulement » : jamais avant cette heure
   };
   return { types, semaine, semaines, alternance, periodes, options, exceptions, durees, marge, grille: { debut, fin }, personnalise: !!(brut && brut.semaine) };
 }
@@ -808,7 +810,15 @@ function soustraireSegment(segments, de, a){
   });
   return out;
 }
-const BORNES_MOMENT = { 'AM': [0, 12 * 60], 'PM': [12 * 60, 17 * 60], 'Soirée': [17 * 60, 24 * 60] };
+const BORNES_MOMENT = { 'AM': [0, 12 * 60], 'PM': [12 * 60, 17 * 60], 'Soirée': [16 * 60, 24 * 60] };
+const PLANCHER_SOIR = 16 * 60;
+function debutSoirAgenda(agenda){
+  const h = agenda && agenda.options && hhmmValide(agenda.options.debutSoir);
+  return h ? minDe(h) : PLANCHER_SOIR;
+}
+function soirSeulement(prefs){
+  return !!(prefs && prefs.moments && prefs.moments.length && prefs.moments.every(m => m === 'Soirée'));
+}
 function prefsAgendaClient(client){
   if(!client || client._sansDossier) return null;
   const p = client.prefsContact || {};
@@ -817,12 +827,13 @@ function prefsAgendaClient(client){
   if(!moments.length && !avant && !apres) return null;
   return { moments, pasAvant: avant, pasApres: apres };
 }
-function debutSelonPreferences(seg, duree, prefs){
+function debutSelonPreferences(seg, duree, prefs, debutSoir){
   let min = seg.de, max = seg.a - duree;
   if(prefs.pasAvant) min = Math.max(min, minDe(prefs.pasAvant));
   if(prefs.pasApres) max = Math.min(max, minDe(prefs.pasApres) - duree);
   if(min > max) return null;
-  const fenetres = (prefs.moments || []).map(m => BORNES_MOMENT[m]).filter(Boolean);
+  const soir = debutSoir == null ? PLANCHER_SOIR : debutSoir;
+  const fenetres = (prefs.moments || []).map(m => m === 'Soirée' ? [soir, 24 * 60] : BORNES_MOMENT[m]).filter(Boolean);
   if(!fenetres.length) return min;
   // Plusieurs moments cochés : n'importe lequel convient, on prend le plus tôt réalisable.
   let best = null;
@@ -891,6 +902,7 @@ function repartirTachesSouples(entrees){
 }
 function planifierJournee(entrees){
   const { date, auj, agenda } = entrees;
+  const debutSoir = debutSoirAgenda(agenda);
   const passe = date < auj;
   const plages = plagesDuJour(agenda, date);
   const blocages = blocagesDuJour(entrees.blocages, date);
@@ -1101,21 +1113,36 @@ function planifierJournee(entrees){
     // Un moment demandé par la tâche elle-même (séquence « Nouveau Leads » : matin / fin de
     // journée) passe avant la préférence du dossier, tout en gardant ses bornes.
     const momentTache = (x.tache && x.tache.moment) || '';
+    // Joignable le soir seulement : le début du soir (16 h par défaut, Réglages › Agenda) est
+    // un plancher absolu, même pour une tâche de séquence marquée « matin », et même quand
+    // rien n'est libre en soirée.
+    const soirOnly = soirSeulement(prefsClient);
+    const plancher = (hhmm) => soirOnly && (!hhmm || minDe(hhmm) < debutSoir) ? hhmmDe(debutSoir) : hhmm;
     const prefs = momentTache
-      ? { moments: [momentTache], pasAvant: prefsClient ? prefsClient.pasAvant : '', pasApres: prefsClient ? prefsClient.pasApres : '' }
-      : prefsClient;
+      ? { moments: [momentTache], pasAvant: plancher(prefsClient ? prefsClient.pasAvant : ''), pasApres: prefsClient ? prefsClient.pasApres : '' }
+      : (prefsClient && { ...prefsClient, pasAvant: plancher(prefsClient.pasAvant) });
     let options = [];
-    if(prefs) options = candidats.map(s => ({ s, debut: debutSelonPreferences(s, duree, prefs) }))
+    if(prefs) options = candidats.map(s => ({ s, debut: debutSelonPreferences(s, duree, prefs, debutSoir) }))
       .filter(o => o.debut != null && o.debut + duree <= limite);
     const selonPrefs = options.length > 0;
     // Rien de libre à ce moment-là : une tâche « fin de journée » se place quand même le plus
     // tard possible, plutôt qu'au premier créneau du matin.
     let leTardPossible = false;
-    if(!options.length && momentTache === 'Soirée'){
+    if(!options.length && soirOnly){
+      // Le moment de la tâche (ex. « matin ») ne tient pas : premier créneau dès le soir.
+      options = candidats.map(s => ({ s, debut: Math.max(s.de, debutSoir) }))
+        .filter(o => o.debut + duree <= Math.min(o.s.a, limite));
+    } else if(!options.length && momentTache === 'Soirée'){
       options = candidats.map(s => ({ s, debut: Math.min(s.a, limite) - duree }))
         .filter(o => o.debut >= o.s.de && o.debut + duree <= limite)
         .sort((a, b) => b.debut - a.debut);
       leTardPossible = options.length > 0;
+    }
+    // Soir seulement et aucune place le soir : on ne force pas un appel en journée.
+    if(!options.length && soirOnly){
+      if(pv) manquees.push({ ...x, debutMin: pv.debutMin, dureeMin: pv.dureeMin, plageId: auDepart ? auDepart.id : null, replaceeA: null });
+      else aReporter.push({ ...x, dureeMin: duree, raison: 'Joignable le soir seulement : aucune place après ' + heureLisible(hhmmDe(debutSoir)) });
+      return;
     }
     if(!options.length) options = candidats.map(s => ({ s, debut: s.de }));
     if(!leTardPossible) options.sort((a, b) => (contact && !chaud ? bonusCreneau(b.debut) - bonusCreneau(a.debut) : 0) || a.debut - b.debut);
@@ -1405,12 +1432,13 @@ function daysBetween(iso){ if(!iso) return Infinity; return Math.floor((todayEpo
 function addDays(iso, n){ const d = new Date(iso); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0,10); }
 const COPIE_CONFLIT_CRM = /^_crm[\s\-(].*\.json$/i;
 const COPIE_CONFLIT_RACINE = /^_(taches|agenda|reglages|notes_generales|corbeille|journal|index|modeles|champs_perso|exports)[\s\-(].*\.json$/i;
+const FICHIER_ABF_ENFANT = '_abf-enfant.json';
 async function findAbfJsonHandle(dirHandle){
   try{ return await dirHandle.getFileHandle(dirHandle.name + '.json'); }catch(e){}
   try{
     for await (const [fname, entry] of dirHandle.entries()){
       // `.ouvert-par.json` (témoin d'ouverture posé par l'ABF) n'est pas une ABF.
-      if(entry.kind === 'file' && fname.toLowerCase().endsWith('.json') && fname !== '_crm.json' && fname !== '_index.json' && !fname.toLowerCase().startsWith('_presentation-vie-') && fname.charAt(0) !== '.' && !COPIE_CONFLIT_CRM.test(fname)) return entry;
+      if(entry.kind === 'file' && fname.toLowerCase().endsWith('.json') && fname !== '_crm.json' && fname !== '_index.json' && !fname.toLowerCase().startsWith('_presentation-vie-') && fname !== FICHIER_ABF_ENFANT && fname.charAt(0) !== '.' && !COPIE_CONFLIT_CRM.test(fname)) return entry;
     }
   }catch(e){}
   return null;
@@ -1871,7 +1899,7 @@ var CRM_METHODES = {
     return val;
   }
 };
-var CRM_COMMUN_NOMS = ["STAGES_DEFAUT","TYPES_ETAPE","TASK_CATEGORIES_DEFAUT","CATEGORIES_RENOMMEES","CATEGORIES_BASE_AJOUTEES","categorieTache","tacheCategorieAJour","STAGES_CONFIG","STAGES","TYPES_PAR_ETAPE","TASK_CATEGORIES","PIPELINE_AGING_DEFAUT","PIPELINE_AGING","OBJECTIF_HEBDO_DEFAUT","OBJECTIF_HEBDO","TASK_RECURRENCE","recurrenceOption","MODELES_TACHES_DEFAUT","MODELES_TACHES","scorePriorite","typeEtape","estGagnee","estFinale","SEQUENCES_DEFAUT","SEQUENCES_BASE_AJOUTEES","SEQUENCES_SUIVI","normaliserSequences","dateEtapeSequence","tacheEtapeSequence","tacheBasculee","occurrenceSuivante","sequenceAContinuer","etapeSuivanteSequence","tacheDeplacee","TYPES_GESTE_TELEPHONE","PREFIXE_CONTACT_NOUVEAU","contactDepuisGeste","contactDoublon","tacheDepuisTelephone","policeDepuisGeste","appliquerGesteTache","tacheAPartAgenda","tachesConformite","echeanceConformite","FUNNEL_STAGES","STAGES_GAGNEES","estNoShowEtape","estEtapeRdv","estTacheContact","RESULTATS_TACHE","libelleResultatTache","notesIssues","leadDateReponse","pourcentage","heureCouranteHHMM","canalTache","CRENEAUX_CONTACT","JOURS_SEMAINE","jourSemaineIso","leadContacts","JOURNAL_IA_DOSSIER","AGENDA_TYPES_DEFAUT","AGENDA_SEMAINE_DEFAUT","AGENDA_DUREES_DEFAUT","AGENDA_DUREE_DEFAUT","AGENDA_MARGE_DEFAUT","AGENDA_GRILLE_DEFAUT","JOURS_COURTS","hhmmValide","minDe","hhmmDe","heureLisible","normaliserAgenda","lundiIso","semaineDuJour","typeAgenda","plagesDuJour","typeAccepte","dureeTacheAgenda","blocagesDuJour","soustraireSegment","BORNES_MOMENT","prefsAgendaClient","debutSelonPreferences","plagesAcceptant","repartirTachesSouples","planifierJournee","GRACE_TACHE_MANQUEE_MIN","majPrevuJournee","prochainJourAvecPlage","jourAvecPlageDes","policeLisible","resumeProduits","ICONES_CATEGORIE","iconeCategorie","PRODUIT_TYPES","TARIFICATION_STATUTS","STATUTS_POTENTIEL","estPotentiel","TAUX_COMMISSION_DEFAUT","TAUX_COMMISSION","tauxCommission","commissionEstimee","primeMensuellePolice","policeIntacte","produitDepuisReco","chiffresReco","synchroniserPolicesAbf","MOIS_COURTS","DOSSIER_FICHES_ENTRANTES","DOSSIERS_TECHNIQUES","TACHES_SANS_DOSSIER_ID","TACHES_SANS_DOSSIER_NOM","CARACTERES_INTERDITS","nomDossierInvalide","SUBFOLDER_LABELS","FIXED_SUBFOLDERS","SEGMENTATION_DEFAUT","SEGMENTATION_OPTIONS","appliquerReglages","MOMENTS_CONTACT","momentsContact","normText","abfFraicheur","_todayCache","todayIso","todayEpoch","_minuitIso","lastNoteIso","daysBetween","addDays","COPIE_CONFLIT_CRM","COPIE_CONFLIT_RACINE","findAbfJsonHandle","ID_RACINE","CATEGORIE_ABF_RACINE","PROVENANCE_PAR_DEFAUT","estDossierClientDisque","RE_DOSSIER_MENAGE","estDossierMenageDisque","MAX_DOSSIERS_MENAGE","nbDossiersClientsDans","entreeIndexChemin","chiffresTel","telFiche","parseNotesRaw","joinNomDossier","splitNomDossier","fmtDate","prochainChangementAgeTarif","delaiLisible","texteChangementTarif","newGnId"];
+var CRM_COMMUN_NOMS = ["STAGES_DEFAUT","TYPES_ETAPE","TASK_CATEGORIES_DEFAUT","CATEGORIES_RENOMMEES","CATEGORIES_BASE_AJOUTEES","categorieTache","tacheCategorieAJour","STAGES_CONFIG","STAGES","TYPES_PAR_ETAPE","TASK_CATEGORIES","PIPELINE_AGING_DEFAUT","PIPELINE_AGING","OBJECTIF_HEBDO_DEFAUT","OBJECTIF_HEBDO","TASK_RECURRENCE","recurrenceOption","MODELES_TACHES_DEFAUT","MODELES_TACHES","scorePriorite","typeEtape","estGagnee","estFinale","SEQUENCES_DEFAUT","SEQUENCES_BASE_AJOUTEES","SEQUENCES_SUIVI","normaliserSequences","dateEtapeSequence","tacheEtapeSequence","tacheBasculee","occurrenceSuivante","sequenceAContinuer","etapeSuivanteSequence","tacheDeplacee","TYPES_GESTE_TELEPHONE","PREFIXE_CONTACT_NOUVEAU","contactDepuisGeste","contactDoublon","tacheDepuisTelephone","policeDepuisGeste","appliquerGesteTache","tacheAPartAgenda","tachesConformite","echeanceConformite","FUNNEL_STAGES","STAGES_GAGNEES","estNoShowEtape","estEtapeRdv","estTacheContact","RESULTATS_TACHE","libelleResultatTache","notesIssues","leadDateReponse","pourcentage","heureCouranteHHMM","canalTache","CRENEAUX_CONTACT","JOURS_SEMAINE","jourSemaineIso","leadContacts","JOURNAL_IA_DOSSIER","AGENDA_TYPES_DEFAUT","AGENDA_SEMAINE_DEFAUT","AGENDA_DUREES_DEFAUT","AGENDA_DUREE_DEFAUT","AGENDA_MARGE_DEFAUT","AGENDA_GRILLE_DEFAUT","AGENDA_DEBUT_SOIR_DEFAUT","JOURS_COURTS","hhmmValide","minDe","hhmmDe","heureLisible","normaliserAgenda","lundiIso","semaineDuJour","typeAgenda","plagesDuJour","typeAccepte","dureeTacheAgenda","blocagesDuJour","soustraireSegment","BORNES_MOMENT","PLANCHER_SOIR","debutSoirAgenda","soirSeulement","prefsAgendaClient","debutSelonPreferences","plagesAcceptant","repartirTachesSouples","planifierJournee","GRACE_TACHE_MANQUEE_MIN","majPrevuJournee","prochainJourAvecPlage","jourAvecPlageDes","policeLisible","resumeProduits","ICONES_CATEGORIE","iconeCategorie","PRODUIT_TYPES","TARIFICATION_STATUTS","STATUTS_POTENTIEL","estPotentiel","TAUX_COMMISSION_DEFAUT","TAUX_COMMISSION","tauxCommission","commissionEstimee","primeMensuellePolice","policeIntacte","produitDepuisReco","chiffresReco","synchroniserPolicesAbf","MOIS_COURTS","DOSSIER_FICHES_ENTRANTES","DOSSIERS_TECHNIQUES","TACHES_SANS_DOSSIER_ID","TACHES_SANS_DOSSIER_NOM","CARACTERES_INTERDITS","nomDossierInvalide","SUBFOLDER_LABELS","FIXED_SUBFOLDERS","SEGMENTATION_DEFAUT","SEGMENTATION_OPTIONS","appliquerReglages","MOMENTS_CONTACT","momentsContact","normText","abfFraicheur","_todayCache","todayIso","todayEpoch","_minuitIso","lastNoteIso","daysBetween","addDays","COPIE_CONFLIT_CRM","COPIE_CONFLIT_RACINE","FICHIER_ABF_ENFANT","findAbfJsonHandle","ID_RACINE","CATEGORIE_ABF_RACINE","PROVENANCE_PAR_DEFAUT","estDossierClientDisque","RE_DOSSIER_MENAGE","estDossierMenageDisque","MAX_DOSSIERS_MENAGE","nbDossiersClientsDans","entreeIndexChemin","chiffresTel","telFiche","parseNotesRaw","joinNomDossier","splitNomDossier","fmtDate","prochainChangementAgeTarif","delaiLisible","texteChangementTarif","newGnId"];
 </script>
   <script>// Calendrier façon Google Agenda : la logique COMMUNE au CRM pour ordinateur et à la version
 // téléphone (mobile/). Ici, rien ne dessine : les deux écrans reçoivent les mêmes vues, les
@@ -2645,7 +2673,7 @@ var CRM_COMMUN_NOMS = ["STAGES_DEFAUT","TYPES_ETAPE","TASK_CATEGORIES_DEFAUT","C
       l.forEach(e => {
         if(e.dossier){
           if(tache.prof < 3 && !docs.has(e.name) && !ign.has(e.name) && e.name.charAt(0) !== '.') aLister.push({ it: e, prof: tache.prof + 1 });
-        } else if(/\.json$/i.test(e.name) && e.taille < 5e6 && !/^_presentation-vie-/i.test(e.name) && e.name.charAt(0) !== '.'
+        } else if(/\.json$/i.test(e.name) && e.taille < 5e6 && !/^_presentation-vie-/i.test(e.name) && e.name !== '_abf-enfant.json' && e.name.charAt(0) !== '.'
           && (tache.prof > 0 || /^_(index|taches|agenda|reglages)\.json$/.test(e.name))) aLire.push(e);
       });
     };

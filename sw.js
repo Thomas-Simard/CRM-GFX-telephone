@@ -1,6 +1,6 @@
 // Service worker de CRM GFX Agenda : garde le PROGRAMME pour l'ouvrir sans réseau.
 // Les données (envoi chiffré de l'ordinateur, importé depuis OneDrive) ne passent jamais par ici.
-const CACHE = 'crm-gfx-5c01fbd7ac2f';
+const CACHE = 'crm-gfx-eff1a3f94f02';
 const FICHIERS = ['./', 'index.html', 'manifest.webmanifest', 'icone-180.png', 'icone-192.png', 'icone-512.png'];
 self.addEventListener('install', (e) => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(FICHIERS)).then(() => self.skipWaiting())); });
 self.addEventListener('activate', (e) => { e.waitUntil(caches.keys().then(l => Promise.all(l.filter(k => k !== CACHE).map(k => caches.delete(k)))).then(() => self.clients.claim())); });
