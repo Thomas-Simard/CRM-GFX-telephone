@@ -1773,6 +1773,8 @@ var CRM_METHODES = {
       valeurPortefeuille: Number(crm.valeurPortefeuille) || 0,
       // Lead GoHighLevel d'origine (codes de qualification bruts), s'il y en a un.
       ficheEntrante: (crm.ficheEntrante && typeof crm.ficheEntrante === 'object') ? crm.ficheEntrante : null,
+      // Lien GoHighLevel : contact, opportunité, bases de la synchro de l'étape, notes envoyées.
+      ghl: (crm.ghl && typeof crm.ghl === 'object' && !Array.isArray(crm.ghl)) ? crm.ghl : null,
       stopMessage: !!crm.stopMessage, stopMessageLe: typeof crm.stopMessageLe === 'string' ? crm.stopMessageLe : '', aRepondu: !!crm.aRepondu,
       aReponduLe: typeof crm.aReponduLe === 'string' ? crm.aReponduLe : '',
       stopApresRelances: typeof crm.stopApresRelances === 'number' ? crm.stopApresRelances : null,
